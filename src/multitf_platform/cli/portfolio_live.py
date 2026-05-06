@@ -147,6 +147,11 @@ def main():
                 )
                 risk = RiskWrapper(risk_cfg)
                 
+                # Restore expectancy filter history from previous state
+                prev_expectancy = prev_state.get("expectancy_history", [])
+                for trade in prev_expectancy:
+                    risk.expectancy.add_trade(trade.get("symbol", symbol), trade.get("pnl", 0))
+                
                 wrapped = risk.apply(sig, h1, alloc_equity, spread)
                 
                 dir_str = "LONG" if sig.is_long else "SHORT" if sig.is_short else "FLAT"

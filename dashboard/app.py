@@ -351,6 +351,90 @@ def api_signals():
     return jsonify({"signals": signals})
 
 
+@app.route("/api/expectancy")
+def api_expectancy():
+    """Calculate expectancy from MT5 history deals."""
+    mt5 = _mt5()
+    result = {}
+    
+    if mt5:
+        from_date = datetime.now() - timedelta(days=90)
+        deals = mt5.history_deals_get(from_date, datetime.now())
+        if deals:
+            symbol_pnls = {}
+            for d in deals:
+                pnl = d.profit + d.commission + d.swap
+                if pnl == 0:
+                    continue
+                sym = d.symbol
+                if sym not in symbol_pnls:
+                    symbol_pnls[sym] = []
+                symbol_pnls[sym].append(pnl)
+            
+            for sym, pnls in symbol_pnls.items():
+                if len(pnls) < 5:
+                    result[sym] = {"sufficient_data": False, "trade_count": len(pnls)}
+                    continue
+                wins = [p for p in pnls if p > 0]
+                losses = [p for p in pnls if p <= 0]
+                win_rate = len(wins) / len(pnls)
+                avg_win = sum(wins) / len(wins) if wins else 0
+                avg_loss = abs(sum(losses) / len(losses)) if losses else 0
+                expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
+                result[sym] = {
+                    "expectancy": round(expectancy, 2),
+                    "win_rate": round(win_rate * 100, 1),
+                    "avg_win": round(avg_win, 2),
+                    "avg_loss": round(avg_loss, 2),
+                    "trade_count": len(pnls),
+                    "sufficient_data": True,
+                }
+    
+    return jsonify({"expectancies": result})
+
+
+@app.route("/api/calendar")
+def api_calendar():
+    """Get upcoming economic events."""
+    try:
+        from multitf_platform.risk.v1_1.economic_calendar import EconomicCalendar
+        cal = EconomicCalendar()
+        upcoming = cal.get_upcoming(hours_ahead=48)
+        blocked, reason = cal.is_blocked()
+        return jsonify({
+            "upcoming": upcoming,
+            "blocked": blocked,
+            "reason": reason,
+        })
+    except Exception as e:
+        return jsonify({"upcoming": [], "blocked": False, "reason": str(e)})
+
+
+@app.route("/api/slippage")
+def api_slippage():
+    """Get slippage diagnostics from state."""
+    state = _load_state()
+    # Slippage data would be stored in state by executor
+    # For now return empty or from MT5 history comparison
+    return jsonify({"slippage": state.get("slippage_diagnostics", {})})
+
+
+@app.route("/api/mae_mfe")
+def api_mae_mfe():
+    """Get MAE/MFE diagnostics from MT5 history."""
+    mt5 = _mt5()
+    result = {}
+    
+    if mt5:
+        from_date = datetime.now() - timedelta(days=30)
+        deals = mt5.history_deals_get(from_date, datetime.now())
+        # Simplified: can't get true MAE/MFE from deals alone without tick data
+        # Return placeholder
+        result = {"note": "MAE/MFE requires tick-level data during trade lifetime"}
+    
+    return jsonify({"mae_mfe": result})
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("MultiTF Trading Dashboard")

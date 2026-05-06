@@ -454,6 +454,28 @@ tbody tr:hover td {
     </div>
   </div>
 
+  <!-- Expectancy & Calendar -->
+  <div style="margin-top: 24px;">
+    <div class="grid grid-2">
+      <div>
+        <div class="section-title">🎯 Trade Expectancy</div>
+        <div class="card" id="expectancy-card">
+          <div class="card-body">
+            <div class="empty">Loading expectancy...</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="section-title">📅 Economic Calendar</div>
+        <div class="card" id="calendar-card">
+          <div class="card-body">
+            <div class="empty">Loading calendar...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Charts -->
   <div style="margin-top: 24px;">
     <div class="grid grid-2">
@@ -850,15 +872,62 @@ function escapeHtml(t) {
   return div.innerHTML;
 }
 
+// ── Expectancy ──
+function renderExpectancy(d) {
+  const card = document.getElementById('expectancy-card');
+  if (!d || !d.expectancies || Object.keys(d.expectancies).length === 0) {
+    card.innerHTML = '<div class="card-body"><div class="empty">No expectancy data</div></div>';
+    return;
+  }
+  let html = '<div class="card-body"><table style="font-size:12px"><thead><tr><th>Symbol</th><th>EV</th><th>Win%</th><th>Avg Win</th><th>Avg Loss</th><th>Trades</th></tr></thead><tbody>';
+  for (const [sym, info] of Object.entries(d.expectancies)) {
+    if (!info.sufficient_data) {
+      html += `<tr><td><strong>${sym}</strong></td><td colspan="5" style="color:var(--text-muted)">${info.trade_count} trades — insufficient</td></tr>`;
+      continue;
+    }
+    const evCls = info.expectancy >= 0.5 ? 'pos' : info.expectancy > 0 ? 'warn' : 'neg';
+    html += `<tr><td><strong>${sym}</strong></td><td class="${evCls}">${fmt$(info.expectancy)}</td><td>${fmtPct(info.win_rate)}</td><td class="pos">${fmt$(info.avg_win)}</td><td class="neg">${fmt$(info.avg_loss)}</td><td>${info.trade_count}</td></tr>`;
+  }
+  html += '</tbody></table></div>';
+  card.innerHTML = html;
+}
+
+// ── Calendar ──
+function renderCalendar(d) {
+  const card = document.getElementById('calendar-card');
+  if (!d) { card.innerHTML = '<div class="card-body"><div class="empty">No calendar data</div></div>'; return; }
+  let html = '<div class="card-body">';
+  if (d.blocked) {
+    html += `<div class="metric-value neg" style="font-size:14px;margin-bottom:10px">⛔ ${d.reason}</div>`;
+  } else {
+    html += `<div class="metric-value pos" style="font-size:14px;margin-bottom:10px">✓ ${d.reason}</div>`;
+  }
+  if (d.upcoming && d.upcoming.length > 0) {
+    html += '<table style="font-size:11.5px;margin-top:8px"><thead><tr><th>Time</th><th>Event</th><th>Impact</th><th>Curr</th></tr></thead><tbody>';
+    for (const ev of d.upcoming) {
+      const impactCls = ev.impact === 'high' ? 'neg' : ev.impact === 'medium' ? 'warn' : '';
+      html += `<tr><td style="color:var(--text-muted)">${ev.time ? ev.time.slice(0,16) : ''}</td><td>${ev.title}</td><td class="${impactCls}">${ev.impact}</td><td>${ev.currency || ''}</td></tr>`;
+    }
+    html += '</tbody></table>';
+  } else {
+    html += '<div style="color:var(--text-muted);font-size:12px;margin-top:8px">No upcoming events in 48h</div>';
+  }
+  html += '</div>';
+  card.innerHTML = html;
+}
+
 // ── Main refresh ──
 async function refreshAll() {
-  const [account, stats, risk, positions, history, logs] = await Promise.all([
+  const [account, stats, risk, positions, history, logs, expectancy, calendar] = await Promise.all([
     get('/api/account'), get('/api/stats'), get('/api/risk'),
-    get('/api/positions'), get('/api/history'), get('/api/logs')
+    get('/api/positions'), get('/api/history'), get('/api/logs'),
+    get('/api/expectancy'), get('/api/calendar')
   ]);
   renderAccount(account);
   renderStats(stats);
   renderRisk(risk);
+  renderExpectancy(expectancy);
+  renderCalendar(calendar);
   renderPositions(positions);
   renderHistory(history);
   renderLogs(logs);

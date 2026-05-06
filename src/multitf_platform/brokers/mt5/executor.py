@@ -11,6 +11,11 @@ from enum import Enum
 from ...risk.v1_1.kelly import KellySizer
 from ...risk.v1_1.correlation import CorrelationRiskChecker
 from ...risk.v1_1.regime import RegimeDetector, MarketRegime
+from ...risk.v1_1.slippage_monitor import SlippageMonitor
+from ...risk.v1_1.mae_mfe_tracker import MAEMFETracker
+from ...risk.v1_1.time_decay_exit import TimeDecayExit
+from ...risk.v1_1.dynamic_leverage import DynamicLeverage
+from ...risk.v1_1.weekend_filter import WeekendFilter
 
 
 class OrderSide(Enum):
@@ -37,6 +42,11 @@ class MT5Executor:
         self.kelly_sizer = KellySizer()
         self.correlation_checker = CorrelationRiskChecker()
         self.regime_detector = RegimeDetector()
+        self.slippage_monitor = SlippageMonitor()
+        self.mae_mfe = MAEMFETracker()
+        self.time_decay = TimeDecayExit()
+        self.dynamic_leverage = DynamicLeverage()
+        self.weekend_filter = WeekendFilter()
     
     def get_position(self, symbol: str) -> Optional[dict]:
         """Check if we have an open position for symbol."""
@@ -108,10 +118,27 @@ class MT5Executor:
         if result.retcode != self.mt5.TRADE_RETCODE_DONE:
             return {"success": False, "error": f"Close failed: {result.retcode} {result.comment}"}
         
+        close_price = getattr(result, 'price', price)
+        direction = 1 if pos["type"] == 0 else -1
+        
+        # Record trade for MAE/MFE tracking (simplified: use SL/TP as MAE/MFE proxies)
+        from ...risk.v1_1.wrapper import RiskWrapper
+        self.mae_mfe.record_trade(
+            symbol, direction, pos["price_open"], close_price,
+            sl=pos.get("sl", pos["price_open"]),
+            tp=pos.get("tp", pos["price_open"]),
+        )
+        
+        # Record for expectancy filter
+        # Note: actual P&L used from position
+        
+        # Clear time decay tracking
+        self.time_decay.record_exit(symbol)
+        
         return {
             "success": True,
             "ticket": getattr(result, 'order', 0),
-            "price": getattr(result, 'price', 0.0),
+            "price": close_price,
             "volume": getattr(result, 'volume', pos["volume"]),
             "profit": pos["profit"],
         }
@@ -216,14 +243,27 @@ class MT5Executor:
         if result.retcode != self.mt5.TRADE_RETCODE_DONE:
             return {"success": False, "error": f"Open failed: {result.retcode} {result.comment}"}
         
+        actual_price = getattr(result, 'price', price)
+        actual_volume = getattr(result, 'volume', size_lots)
+        
+        # Record slippage
+        slip = self.slippage_monitor.record_slippage(
+            symbol, price, actual_price, direction
+        )
+        
+        # Record entry for time decay tracking
+        self.time_decay.record_entry(symbol, actual_price, sl)
+        
         return {
             "success": True,
             "ticket": getattr(result, 'order', 0),
-            "price": getattr(result, 'price', price),
-            "volume": getattr(result, 'volume', size_lots),
+            "price": actual_price,
+            "volume": actual_volume,
             "sl": sl,
             "tp": tp,
             "direction": direction,
+            "slippage": slip["slippage"],
+            "slippage_alert": slip["alert"],
         }
     
     def open_position_with_partial_tp(self, symbol: str, direction: int, size_lots: float,
@@ -513,6 +553,27 @@ class MT5Executor:
         if current:
             current_direction = 1 if current["type"] == 0 else -1
         
+        # Check time decay on existing positions
+        if current_direction != 0 and current:
+            tick = self.mt5.symbol_info_tick(symbol)
+            if tick:
+                current_price = tick.ask if current_direction == 1 else tick.bid
+                td_exit, td_reason = self.time_decay.check_exit(symbol, current_price)
+                if td_exit:
+                    results.append({"action": "time_decay", "reason": td_reason})
+                    close_result = self.close_position(symbol)
+                    results.append({"action": "close", **close_result})
+                    return {"success": True, "action": "time_decay", "results": results}
+        
+        # Check weekend gap risk — close positions before weekend
+        if current_direction != 0:
+            wc_close, wc_reason = self.weekend_filter.should_close_positions()
+            if wc_close:
+                results.append({"action": "weekend_close", "reason": wc_reason})
+                close_result = self.close_position(symbol)
+                results.append({"action": "close", **close_result})
+                return {"success": True, "action": "weekend_close", "results": results}
+        
         # No change needed
         if target_direction == current_direction:
             if target_direction == 0:
@@ -623,8 +684,13 @@ class MT5Executor:
         elif regime == MarketRegime.QUIET:
             raw *= 0.0  # Block in quiet markets
         
+        # Apply dynamic leverage cap based on drawdown
+        capped_raw, lev_reason = self.dynamic_leverage.get_position_size_cap(
+            equity, raw, broker_leverage=1000
+        )
+        
         # Round to lot step
-        lots = round(raw / lot_step) * lot_step
+        lots = round(capped_raw / lot_step) * lot_step
         lots = max(min_lot, min(max_lot, lots))
         
         return lots

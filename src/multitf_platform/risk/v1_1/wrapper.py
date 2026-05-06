@@ -11,6 +11,10 @@ from .regime import RegimeDetector, MarketRegime
 from .correlation import CorrelationRiskChecker
 from .kelly import KellySizer
 from .session_filter import SessionFilter, SessionStatus
+from .garch_forecast import GARCHForecaster
+from .expectancy_filter import ExpectancyFilter
+from .weekend_filter import WeekendFilter
+from .economic_calendar import EconomicCalendar
 
 
 class Action(Enum):
@@ -85,6 +89,10 @@ class RiskWrapper:
         self.correlation = CorrelationRiskChecker()
         self.kelly = KellySizer()
         self.session = SessionFilter(block_asian=True)
+        self.garch = GARCHForecaster()
+        self.expectancy = ExpectancyFilter()
+        self.weekend = WeekendFilter(close_before_weekend=True, block_weekend=True)
+        self.calendar = EconomicCalendar()
     
     def apply(
         self,
@@ -147,7 +155,19 @@ class RiskWrapper:
                 sub_reasons=sub_reasons
             )
         
-        # 3. News filter (NFP/FOMC)
+        # 3. Economic calendar (high-impact news)
+        cal_blocked, cal_reason = self.calendar.is_blocked()
+        if cal_blocked:
+            sub_reasons.append(cal_reason)
+            return WrappedDecision(
+                action=Action.BLOCK,
+                original_signal=signal,
+                position_scale=0.0,
+                reason="Economic calendar blocked",
+                sub_reasons=sub_reasons
+            )
+        
+        # 4. News filter (NFP/FOMC synthetic)
         news_ok, news_reason = self._check_news_filter(signal)
         if not news_ok:
             sub_reasons.append(news_reason)
@@ -159,7 +179,19 @@ class RiskWrapper:
                 sub_reasons=sub_reasons
             )
         
-        # 4. Session filter (London + NY only)
+        # 5. Weekend gap filter
+        weekend_allow, weekend_reason = self.weekend.allow_new_trade()
+        if not weekend_allow:
+            sub_reasons.append(weekend_reason)
+            return WrappedDecision(
+                action=Action.BLOCK,
+                original_signal=signal,
+                position_scale=0.0,
+                reason="Weekend filter blocked",
+                sub_reasons=sub_reasons
+            )
+        
+        # 6. Session filter (London + NY only)
         session_status, session_scale, session_reason = self.session.check()
         if session_status == SessionStatus.BLOCKED:
             sub_reasons.append(session_reason)
@@ -189,7 +221,7 @@ class RiskWrapper:
         if vol_scale < 1.0:
             sub_reasons.append(vol_reason)
         
-        # 6. Spread filter
+        # 7. Spread filter
         if spread_points is not None:
             spread_ok, spread_reason = self._check_spread(h1_bars, spread_points)
             if not spread_ok:
@@ -202,7 +234,7 @@ class RiskWrapper:
                     sub_reasons=sub_reasons
                 )
         
-        # 7. Flip/chop filter
+        # 8. Flip/chop filter
         flip_ok, flip_reason = self._check_flip_chop(signal, h1_bars)
         if not flip_ok:
             sub_reasons.append(flip_reason)
@@ -214,7 +246,7 @@ class RiskWrapper:
                 sub_reasons=sub_reasons
             )
         
-        # 8. Trade throttle
+        # 9. Trade throttle
         throttle_ok, throttle_reason = self._check_trade_throttle(signal)
         if not throttle_ok:
             sub_reasons.append(throttle_reason)
@@ -226,7 +258,7 @@ class RiskWrapper:
                 sub_reasons=sub_reasons
             )
         
-        # 9. Regime detection
+        # 10. Regime detection
         regime = self.regime.detect(h1_bars)
         adj = self.regime.get_position_adjustments()
         if adj["block_new"]:
@@ -242,11 +274,25 @@ class RiskWrapper:
         if adj["scale"] < 1.0:
             sub_reasons.append(f"Regime: {regime.value} (scale {adj['scale']:.0%})")
         
-        # 10. Correlation risk check (requires existing_positions dict)
+        # 11. Correlation risk check (requires existing_positions dict)
         # Note: existing_positions passed via h1_bars metadata if available
         # This is checked at execution time, not signal time
         
-        # 11. Position sizing (volatility targeting + Kelly)
+        # 12. Expectancy filter
+        ev_allow, ev_value, ev_reason = self.expectancy.check_trade()
+        if not ev_allow:
+            sub_reasons.append(ev_reason)
+            return WrappedDecision(
+                action=Action.BLOCK,
+                original_signal=signal,
+                position_scale=0.0,
+                reason="Expectancy filter blocked",
+                sub_reasons=sub_reasons
+            )
+        if ev_value > 0:
+            sub_reasons.append(ev_reason)
+        
+        # 13. Position sizing (GARCH forecast + volatility targeting + Kelly)
         size_scale, size_reason = self._calculate_position_size(h1_bars, equity)
         position_scale *= size_scale
         if size_scale < 1.0:
@@ -498,7 +544,7 @@ class RiskWrapper:
         return True, ""
     
     def _calculate_position_size(self, h1_bars: pd.DataFrame, equity: float) -> tuple:
-        """Calculate position scale based on volatility targeting + Kelly."""
+        """Calculate position scale based on GARCH forecast + volatility targeting + Kelly."""
         cfg = self.config.sizing
         
         if len(h1_bars) < 20:
@@ -514,22 +560,29 @@ class RiskWrapper:
         if realized_vol <= 0:
             return cfg.min_position_scale, "Zero realized volatility"
         
+        # GARCH forecast volatility
+        garch_scale = self.garch.get_position_scale(h1_bars, target_vol=cfg.target_annualized_vol_pct)
+        garch_diag = self.garch.get_diagnostics()
+        
         # Target vol / realized vol = position scale
         vol_scale = cfg.target_annualized_vol_pct / realized_vol
+        
+        # Blend historical and GARCH: 60% GARCH, 40% historical
+        blended_vol_scale = 0.6 * garch_scale + 0.4 * vol_scale
         
         # Kelly Criterion scale (fraction of equity to risk)
         kelly_frac = self.kelly.calculate(min_trades=10)
         # Normalize Kelly fraction: max Kelly = 10% of equity, so scale = kelly / 0.10
         kelly_scale = kelly_frac / 0.10
         
-        # Combine: vol targeting × Kelly fraction
-        combined_scale = vol_scale * kelly_scale
+        # Combine: blended vol targeting × Kelly fraction
+        combined_scale = blended_vol_scale * kelly_scale
         
         # Clamp to min/max
         final_scale = max(cfg.min_position_scale, min(cfg.max_position_scale, combined_scale))
         
-        return final_scale, "Vol=%.2f × Kelly=%.2f = %.2f" % (
-            vol_scale, kelly_scale, final_scale)
+        return final_scale, "GARCH=%.2f × Hist=%.2f × Kelly=%.2f = %.2f" % (
+            garch_scale, vol_scale, kelly_scale, final_scale)
     
     def update_after_trade(self, pnl_pct: float, timestamp: pd.Timestamp):
         """Update risk state after a trade closes."""
