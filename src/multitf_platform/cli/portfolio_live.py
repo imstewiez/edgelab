@@ -255,6 +255,47 @@ def main():
             else:
                 print(f"  {symbol:8s} | Weight {w:>5.1%} | Alloc ${alloc:>6.2f} | FLAT")
         
+        # Build equity history
+        prev_state = load_portfolio_state()
+        equity_history = prev_state.get("equity_history", [])
+        equity_history.append({
+            "time": datetime.utcnow().isoformat(),
+            "equity": float(total_equity),
+        })
+        equity_history = equity_history[-500:]  # Keep last 500 points
+        
+        # Build regime map
+        regimes = {}
+        for symbol in ASSETS:
+            h1 = all_h1_data.get(symbol)
+            if h1 is not None and len(h1) > 50:
+                from multitf_platform.risk.v1_1.regime import RegimeDetector
+                det = RegimeDetector()
+                r = det.detect(h1)
+                regimes[symbol] = r.value
+        
+        # Build correlation matrix
+        correlations = {}
+        try:
+            from multitf_platform.risk.v1_1.correlation import CorrelationRiskChecker
+            cc = CorrelationRiskChecker()
+            for symbol in ASSETS:
+                h1 = all_h1_data.get(symbol)
+                if h1 is not None and len(h1) > 0:
+                    cc.update_price(symbol, h1["close"].iloc[-1], h1.index[-1])
+            for i, s1 in enumerate(ASSETS):
+                for s2 in ASSETS[i+1:]:
+                    r1 = cc._get_returns(s1)
+                    r2 = cc._get_returns(s2)
+                    if len(r1) > 10 and len(r2) > 10:
+                        import numpy as np
+                        combined = pd.DataFrame({"a": r1, "b": r2}).dropna()
+                        if len(combined) > 10:
+                            corr = np.corrcoef(combined["a"], combined["b"])[0, 1]
+                            correlations[f"{s1}-{s2}"] = round(float(corr), 3)
+        except Exception:
+            pass
+        
         # Save state
         portfolio_state = {
             "timestamp": datetime.utcnow().isoformat(),
@@ -262,6 +303,9 @@ def main():
             "signals": signals,
             "weights": weights,
             "executions": executions,
+            "equity_history": equity_history,
+            "regimes": regimes,
+            "correlations": correlations,
         }
         save_portfolio_state(portfolio_state)
         
