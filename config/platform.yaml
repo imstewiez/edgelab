@@ -80,7 +80,7 @@ risk_wrapper:
 broker:
   adapter: paper
   symbol: XAUUSD.s
-  initial_equity: 10000.0
+  initial_equity: 10300.0
   leverage: 1000
   account_currency: USD
   execution_mode: quote_replay

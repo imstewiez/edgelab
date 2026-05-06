@@ -44,7 +44,7 @@ def run_paper_trade_backtest(symbol="XAUUSD"):
     )
     # $10,000 account with realistic slippage
     broker_cfg = BrokerConfig(
-        initial_equity=10000.0,
+        initial_equity=10300.0,
         leverage=1000,
         commission_per_lot=7.0,
         min_lot_size=0.01,

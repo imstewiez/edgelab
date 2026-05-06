@@ -92,7 +92,7 @@ class StatArbEngine:
         self,
         leg1_bars: pd.DataFrame,
         leg2_bars: pd.DataFrame,
-        equity: float = 10000.0,
+        equity: float = 10300.0,
         now_utc: Optional[pd.Timestamp] = None,
     ) -> StatArbSignal:
         """Generate pairs trading signal from H1 bar data for both legs.

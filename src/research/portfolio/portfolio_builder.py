@@ -118,7 +118,7 @@ def build_portfolio(returns_dict, weights):
             portfolio_returns += r * w
     
     # Build equity curve
-    equity = (1 + portfolio_returns).cumprod() * 10000.0
+    equity = (1 + portfolio_returns).cumprod() * 10300.0
     
     return equity, portfolio_returns
 

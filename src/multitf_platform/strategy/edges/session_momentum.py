@@ -95,7 +95,7 @@ class SessionMomentumEngine:
     def generate_signal(
         self,
         h1_bars: pd.DataFrame,
-        equity: float = 10000.0,
+        equity: float = 10300.0,
         now_utc: Optional[pd.Timestamp] = None,
     ) -> SessionMomentumSignal:
         """Generate session momentum signal.

@@ -112,7 +112,7 @@ def build_portfolio_equity(results, weights):
             portfolio += ec * w
     
     # Scale to $10,000 initial equity
-    portfolio *= 10000.0
+    portfolio *= 10300.0
     return portfolio
 
 

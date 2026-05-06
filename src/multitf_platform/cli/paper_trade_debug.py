@@ -52,7 +52,7 @@ def debug_risk_decisions(symbol="XAUUSD", n_bars=1000):
         raw_signal_counts[sig.direction] += 1
         
         spread = 0.25
-        equity = 10000.0
+        equity = 10300.0
         
         wrapped = risk.apply(sig, h1_slice, equity, spread)
         action_counts[wrapped.action.name] += 1
