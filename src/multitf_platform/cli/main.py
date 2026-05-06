@@ -560,6 +560,15 @@ def portfolio_live(
 
 
 @app.command()
+def portfolio_live_v2(
+    dry_run: bool = typer.Option(False, help="Show signals only, no state changes"),
+):
+    """Run unified multi-alpha portfolio v2: MultiTF + StatArb + SessionMomentum + GapFade."""
+    from .portfolio_live_v2 import main as _portfolio_live_v2
+    _portfolio_live_v2()
+
+
+@app.command()
 def portfolio_backtest():
     """Run portfolio backtest and show metrics."""
     from .portfolio_backtest import main as _portfolio_backtest

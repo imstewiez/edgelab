@@ -235,7 +235,7 @@ def main():
                     "bid": float(tick['bid']),
                     "ask": float(tick['ask']),
                     "spread": float(spread),
-                    "target_lots": lots,
+                    "target_lots": 0.0,
                 }
                 
             except Exception as e:

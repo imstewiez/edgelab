@@ -215,7 +215,8 @@ class MT5Executor:
     def open_position(self, symbol: str, direction: int, size_lots: float,
                       h4_bars: pd.DataFrame = None,
                       sl_mult: float = 1.0, tp_mult: float = 2.0,
-                      comment: str = "MultiTF open") -> dict:
+                      comment: str = "MultiTF open",
+                      sl: float = None, tp: float = None) -> dict:
         """Open a market order with SL/TP.
         
         Args:
@@ -226,6 +227,8 @@ class MT5Executor:
             sl_mult: SL distance multiplier (regime-adjusted)
             tp_mult: TP distance multiplier (regime-adjusted)
             comment: Order comment
+            sl: Optional explicit SL price (overrides H4-based calc)
+            tp: Optional explicit TP price (overrides H4-based calc)
         """
         tick = self.mt5.symbol_info_tick(symbol)
         if tick is None:
@@ -239,7 +242,12 @@ class MT5Executor:
             price = tick.bid
         
         # Calculate SL/TP
-        sl, tp = self._calculate_sl_tp(symbol, direction, price, h4_bars, sl_mult, tp_mult)
+        if sl is None or tp is None:
+            calc_sl, calc_tp = self._calculate_sl_tp(symbol, direction, price, h4_bars, sl_mult, tp_mult)
+            if sl is None:
+                sl = calc_sl
+            if tp is None:
+                tp = calc_tp
         
         request = {
             "action": self.mt5.TRADE_ACTION_DEAL,
@@ -565,6 +573,7 @@ class MT5Executor:
             equity: Current account equity
             scale: Portfolio allocation scale
         """
+        results = []
         current = self.get_position(symbol)
         current_direction = 0
         if current:
@@ -596,8 +605,6 @@ class MT5Executor:
             if target_direction == 0:
                 return {"success": True, "action": "none", "message": "Already flat"}
             return {"success": True, "action": "hold", "message": f"Holding {current_direction}"}
-        
-        results = []
         
         # Close existing if any
         if current_direction != 0:
