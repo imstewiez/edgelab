@@ -15,6 +15,7 @@ from multitf_platform.config.loader import load_config
 from multitf_platform.config.models import BrokerConfig, CircuitBreakerConfig
 from multitf_platform.strategy.frozen.v1_0_0 import MultiTFStrategy, FrozenStrategyConfig
 from multitf_platform.risk.v1_1 import RiskWrapper
+from multitf_platform.risk.v1_1.risk_parity import RiskParityWeights
 from multitf_platform.brokers.mt5.executor import MT5Executor
 from multitf_platform.audit.logger import AuditLogger
 
@@ -23,7 +24,21 @@ ASSETS = ["XAUUSD", "EURUSD", "NAS100"]
 INV_VOL_WEIGHTS = {"XAUUSD": 0.246, "EURUSD": 0.562, "NAS100": 0.191}
 
 
-def get_weights():
+def get_weights(risk_parity: RiskParityWeights = None, h1_data: dict = None):
+    """Get portfolio weights.
+    
+    If risk_parity and h1_data are provided, uses dynamic risk-parity weights.
+    Otherwise falls back to fixed inverse-vol weights.
+    """
+    if risk_parity is not None and h1_data is not None:
+        # Update prices and calculate
+        for symbol, bars in h1_data.items():
+            risk_parity.update_prices(symbol, bars)
+        weights = risk_parity.calculate_weights(ASSETS)
+        diag = risk_parity.get_diagnostics(ASSETS)
+        print(f"  Risk-Parity weights: {weights}")
+        print(f"  Method: {diag.get('method', 'unknown')}")
+        return weights
     return INV_VOL_WEIGHTS.copy()
 
 
@@ -72,7 +87,6 @@ def main():
         print(f"Leverage: 1:{account['leverage']}")
         
         strategy = MultiTFStrategy(FrozenStrategyConfig())
-        weights = get_weights()
         total_equity = account['equity']
         
         # Load previous state
@@ -81,11 +95,37 @@ def main():
         
         signals = {}
         executions = []
+        all_h1_data = {}
+        all_h4_data = {}
         
+        # Phase 1: Pull data for all assets
+        print("\n--- Phase 1: Data Collection ---")
         for symbol in ASSETS:
-            print(f"\n--- {symbol} ---")
             try:
                 h1, h4 = adapter.get_data(symbol, h1_bars=300, h4_bars=100)
+                all_h1_data[symbol] = h1
+                all_h4_data[symbol] = h4
+                print(f"  {symbol}: {len(h1)} H1 bars, {len(h4)} H4 bars")
+            except Exception as e:
+                print(f"  {symbol}: ERROR fetching data: {e}")
+        
+        # Phase 2: Calculate risk-parity weights
+        print("\n--- Phase 2: Risk-Parity Weights ---")
+        rp = RiskParityWeights(lookback_bars=50)
+        weights = get_weights(rp, all_h1_data)
+        
+        # Phase 3: Execute per asset
+        print("\n--- Phase 3: Execution ---")
+        for symbol in ASSETS:
+            print(f"\n--- {symbol} ---")
+            
+            h1 = all_h1_data.get(symbol)
+            h4 = all_h4_data.get(symbol)
+            if h1 is None or h4 is None:
+                print(f"  Skipped: no data")
+                continue
+            
+            try:
                 ts = h1.index[-1]
                 bar = h1.iloc[-1]
                 
@@ -140,12 +180,22 @@ def main():
                         elif r["action"] == "risk_check":
                             print(f"  >>> RISK: Kelly={r.get('kelly', 0):.4f}, Regime={r.get('regime', 'unknown')}, Scale={r.get('risk_scale', 1.0):.2f}, Reason={r.get('reason', '')}")
                             print(f"  >>> FINAL LOTS: {r.get('final_lots', 0):.2f}")
+                        elif r["action"] == "heat_block":
+                            print(f"  >>> HEAT BLOCKED: {r.get('reason', '')}")
+                        elif r["action"] == "heat_scale":
+                            print(f"  >>> HEAT SCALED: {r.get('scale', 1.0):.2f}, Reason={r.get('reason', '')}, Lots={r.get('final_lots', 0):.2f}")
                         elif r["action"] == "block":
                             print(f"  >>> BLOCKED: {r.get('reason', '')}")
                         elif r["action"] == "open":
-                            sl = r.get('sl', 0)
-                            tp = r.get('tp', 0)
-                            print(f"  >>> OPENED: {final_str} {r.get('volume', 0):.2f} lots @ {r.get('price', 0):.5f} | SL {sl:.5f} | TP {tp:.5f}")
+                            if r.get("partial_tp"):
+                                print(f"  >>> OPENED (Partial TP): {final_str}")
+                                for sub in r.get("results", []):
+                                    if sub.get("success"):
+                                        print(f"      {sub.get('comment', '')}: {sub.get('volume', 0):.2f} lots @ {sub.get('price', 0):.5f} | SL {sub.get('sl', 0):.5f} | TP {sub.get('tp', 0):.5f}")
+                            else:
+                                sl = r.get('sl', 0)
+                                tp = r.get('tp', 0)
+                                print(f"  >>> OPENED: {final_str} {r.get('volume', 0):.2f} lots @ {r.get('price', 0):.5f} | SL {sl:.5f} | TP {tp:.5f}")
                             executions.append({"symbol": symbol, "action": "OPEN", "side": final_str, "size": r.get('volume', 0), "price": r.get('price', 0), "sl": sl, "tp": tp})
                     
                     if not result["success"]:

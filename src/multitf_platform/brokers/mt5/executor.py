@@ -116,25 +116,33 @@ class MT5Executor:
             "profit": pos["profit"],
         }
     
-    def _calculate_sl_tp(self, symbol: str, direction: int, entry_price: float, h4_bars: pd.DataFrame = None) -> tuple:
+    def _calculate_sl_tp(self, symbol: str, direction: int, entry_price: float,
+                         h4_bars: pd.DataFrame = None,
+                         sl_mult: float = 1.0, tp_mult: float = 2.0) -> tuple:
         """Calculate stop loss and take profit based on recent H4 structure.
         
-        Uses recent H4 swing low/high for SL, 2:1 R/R for TP.
+        Uses recent H4 swing low/high for SL, adjustable R/R for TP.
         Falls back to ATR-based if no H4 data.
+        
+        Args:
+            sl_mult: Multiplier for SL distance (regime-adjusted)
+            tp_mult: Multiplier for TP distance (regime-adjusted)
         """
-        tick = self.mt5.symbol_info_tick(symbol)
-        point = self.mt5.symbol_info(symbol).point
+        info = self.mt5.symbol_info(symbol)
+        point = info.point if info else 0.00001
         
         if h4_bars is not None and len(h4_bars) >= 5:
             recent = h4_bars.tail(5)
             if direction == 1:  # LONG
                 sl = recent["low"].min()
                 risk = entry_price - sl
-                tp = entry_price + risk * 2.0
+                sl = entry_price - risk * sl_mult
+                tp = entry_price + risk * tp_mult
             else:  # SHORT
                 sl = recent["high"].max()
                 risk = sl - entry_price
-                tp = entry_price - risk * 2.0
+                sl = entry_price + risk * sl_mult
+                tp = entry_price - risk * tp_mult
         else:
             # Fallback: 50 pips/points SL based on asset type
             if "XAU" in symbol or "NAS" in symbol or "GER" in symbol or "US30" in symbol:
@@ -143,11 +151,11 @@ class MT5Executor:
                 sl_distance = 0.0050  # 50 pips for FX
             
             if direction == 1:
-                sl = entry_price - sl_distance
-                tp = entry_price + sl_distance * 2.0
+                sl = entry_price - sl_distance * sl_mult
+                tp = entry_price + sl_distance * tp_mult
             else:
-                sl = entry_price + sl_distance
-                tp = entry_price - sl_distance * 2.0
+                sl = entry_price + sl_distance * sl_mult
+                tp = entry_price - sl_distance * tp_mult
         
         # Ensure SL/TP are valid (minimum distance from price)
         min_distance = 10 * point
@@ -160,7 +168,10 @@ class MT5Executor:
         
         return sl, tp
     
-    def open_position(self, symbol: str, direction: int, size_lots: float, h4_bars: pd.DataFrame = None) -> dict:
+    def open_position(self, symbol: str, direction: int, size_lots: float,
+                      h4_bars: pd.DataFrame = None,
+                      sl_mult: float = 1.0, tp_mult: float = 2.0,
+                      comment: str = "MultiTF open") -> dict:
         """Open a market order with SL/TP.
         
         Args:
@@ -168,6 +179,9 @@ class MT5Executor:
             direction: 1=LONG, -1=SHORT
             size_lots: Lot size (e.g., 0.01)
             h4_bars: Optional H4 DataFrame for structure-based SL/TP
+            sl_mult: SL distance multiplier (regime-adjusted)
+            tp_mult: TP distance multiplier (regime-adjusted)
+            comment: Order comment
         """
         tick = self.mt5.symbol_info_tick(symbol)
         if tick is None:
@@ -181,7 +195,7 @@ class MT5Executor:
             price = tick.bid
         
         # Calculate SL/TP
-        sl, tp = self._calculate_sl_tp(symbol, direction, price, h4_bars)
+        sl, tp = self._calculate_sl_tp(symbol, direction, price, h4_bars, sl_mult, tp_mult)
         
         request = {
             "action": self.mt5.TRADE_ACTION_DEAL,
@@ -193,7 +207,7 @@ class MT5Executor:
             "tp": round(tp, self.mt5.symbol_info(symbol).digits),
             "deviation": 10,
             "magic": 234000,
-            "comment": "MultiTF open",
+            "comment": comment,
             "type_time": self.mt5.ORDER_TIME_GTC,
             "type_filling": self._get_filling_mode(symbol),
         }
@@ -211,6 +225,174 @@ class MT5Executor:
             "tp": tp,
             "direction": direction,
         }
+    
+    def open_position_with_partial_tp(self, symbol: str, direction: int, size_lots: float,
+                                      h4_bars: pd.DataFrame = None,
+                                      regime: MarketRegime = None) -> dict:
+        """Open two positions for partial take-profit strategy.
+        
+        Position 1 (50%): TP at 1R (quick profit, lock gains)
+        Position 2 (50%): TP at regime-adjusted multiplier (trend capture)
+        
+        Returns combined result dict.
+        """
+        if size_lots < 0.02:
+            # Too small to split, use single position
+            return self.open_position(symbol, direction, size_lots, h4_bars,
+                                      sl_mult=1.0, tp_mult=2.0)
+        
+        half = round(size_lots / 2, 2)
+        info = self.mt5.symbol_info(symbol)
+        min_lot = info.volume_min if info else 0.01
+        if half < min_lot:
+            half = min_lot
+        
+        # Get regime adjustments for TP multiplier
+        adj = self.regime_detector.get_position_adjustments() if regime else \
+              {"sl_mult": 1.0, "tp_mult": 2.0}
+        tp_mult_2 = adj.get("tp_mult", 2.0)
+        sl_mult = adj.get("sl_mult", 1.0)
+        
+        # Position 1: 50% size, TP at 1R
+        result1 = self.open_position(symbol, direction, half, h4_bars,
+                                     sl_mult=sl_mult, tp_mult=1.0,
+                                     comment="MultiTF scalp")
+        
+        # Position 2: 50% size, TP at regime multiplier
+        result2 = self.open_position(symbol, direction, half, h4_bars,
+                                     sl_mult=sl_mult, tp_mult=tp_mult_2,
+                                     comment="MultiTF swing")
+        
+        combined = {
+            "success": result1["success"] or result2["success"],
+            "partial_tp": True,
+            "results": [result1, result2],
+        }
+        
+        if result1["success"]:
+            combined.update({
+                "ticket": result1.get("ticket"),
+                "price": result1.get("price"),
+                "volume": result1.get("volume", 0) + result2.get("volume", 0),
+                "sl": result1.get("sl"),
+                "tp": result1.get("tp"),
+                "direction": direction,
+            })
+        elif result2["success"]:
+            combined.update({
+                "ticket": result2.get("ticket"),
+                "price": result2.get("price"),
+                "volume": result2.get("volume", 0),
+                "sl": result2.get("sl"),
+                "tp": result2.get("tp"),
+                "direction": direction,
+            })
+        
+        return combined
+    
+    def calculate_position_risk(self, symbol: str, volume: float, sl_price: float,
+                                entry_price: float = None) -> float:
+        """Calculate dollar risk for a position.
+        
+        Uses MT5 symbol info for accurate contract sizing.
+        """
+        info = self.mt5.symbol_info(symbol)
+        if info is None or sl_price <= 0:
+            return 0.0
+        
+        if entry_price is None:
+            # Try to get from open position
+            pos = self.get_position(symbol)
+            if pos:
+                entry_price = pos["price_open"]
+            else:
+                tick = self.mt5.symbol_info_tick(symbol)
+                entry_price = tick.ask if tick else 0
+        
+        if entry_price <= 0:
+            return 0.0
+        
+        sl_distance = abs(entry_price - sl_price)
+        
+        # Use tick value for accurate dollar risk
+        tick_size = info.trade_tick_size if info.trade_tick_size > 0 else info.point
+        tick_value = info.trade_tick_value if info.trade_tick_value > 0 else info.point
+        
+        if tick_size > 0 and tick_value > 0:
+            ticks_at_risk = sl_distance / tick_size
+            risk = volume * ticks_at_risk * tick_value
+        else:
+            # Fallback: estimate based on symbol type
+            if "XAU" in symbol:
+                risk = volume * 100 * sl_distance  # 100 oz per lot
+            elif "NAS" in symbol or "GER" in symbol or "US30" in symbol:
+                risk = volume * sl_distance  # 1 contract per lot
+            else:
+                risk = volume * 100000 * sl_distance  # 100k units per lot
+        
+        return risk
+    
+    def get_portfolio_heat(self, equity: float) -> dict:
+        """Calculate total portfolio heat (open risk) as % of equity.
+        
+        Returns dict with heat_pct and per-position breakdown.
+        """
+        positions = self.mt5.positions_get()
+        total_risk = 0.0
+        breakdown = {}
+        
+        for p in positions:
+            risk = self.calculate_position_risk(p.symbol, p.volume, p.sl, p.price_open)
+            total_risk += risk
+            breakdown[p.symbol] = {
+                "volume": p.volume,
+                "risk": risk,
+                "risk_pct": (risk / equity * 100) if equity > 0 else 0,
+            }
+        
+        heat_pct = (total_risk / equity * 100) if equity > 0 else 0
+        
+        return {
+            "heat_pct": heat_pct,
+            "total_risk": total_risk,
+            "breakdown": breakdown,
+            "max_allowed_pct": 5.0,
+        }
+    
+    def check_portfolio_heat(self, symbol: str, proposed_volume: float,
+                             proposed_sl: float, equity: float,
+                             max_heat_pct: float = 5.0) -> tuple[bool, float, str]:
+        """Check if adding a new position would exceed portfolio heat cap.
+        
+        Returns:
+            (allow: bool, scale: float, reason: str)
+        """
+        current_heat = self.get_portfolio_heat(equity)
+        current_pct = current_heat["heat_pct"]
+        
+        if current_pct >= max_heat_pct:
+            return False, 0.0, f"Portfolio heat {current_pct:.1f}% >= cap {max_heat_pct:.1f}%"
+        
+        # Calculate proposed trade risk
+        tick = self.mt5.symbol_info_tick(symbol)
+        entry = tick.ask if tick else 0
+        proposed_risk = self.calculate_position_risk(symbol, proposed_volume, proposed_sl, entry)
+        proposed_pct = (proposed_risk / equity * 100) if equity > 0 else 0
+        
+        new_total = current_pct + proposed_pct
+        
+        if new_total <= max_heat_pct:
+            return True, 1.0, f"Heat {current_pct:.1f}% + {proposed_pct:.1f}% = {new_total:.1f}% <= {max_heat_pct:.1f}%"
+        
+        # Scale down to fit within cap
+        available_pct = max_heat_pct - current_pct
+        if available_pct <= 0:
+            return False, 0.0, f"No heat available (current {current_pct:.1f}%)"
+        
+        scale = available_pct / proposed_pct if proposed_pct > 0 else 0.0
+        scale = max(0.0, min(1.0, scale))
+        
+        return True, scale, f"Heat cap: scaled {scale:.0%} (current {current_pct:.1f}%)"
     
     def trail_stop(self, symbol: str) -> dict:
         """Trail stop loss on existing position to lock in profits.
@@ -384,7 +566,26 @@ class MT5Executor:
                            "regime": regime, "risk_scale": risk_scale,
                            "reason": risk_reason, "final_lots": final_lots})
             
-            open_result = self.open_position(symbol, target_direction, final_lots, h4_bars)
+            # Check portfolio heat cap
+            tick = self.mt5.symbol_info_tick(symbol)
+            entry = tick.ask if tick else 0
+            sl, _ = self._calculate_sl_tp(symbol, target_direction, entry, h4_bars)
+            heat_allow, heat_scale, heat_reason = self.check_portfolio_heat(
+                symbol, final_lots, sl, equity, max_heat_pct=5.0
+            )
+            
+            if not heat_allow:
+                results.append({"action": "heat_block", "reason": heat_reason})
+                return {"success": True, "action": "heat_block", "results": results, "reason": heat_reason}
+            
+            if heat_scale < 1.0:
+                final_lots = round(final_lots * heat_scale, 2)
+                results.append({"action": "heat_scale", "scale": heat_scale, "reason": heat_reason, "final_lots": final_lots})
+            
+            # Open with partial TP (split into scalp + swing)
+            open_result = self.open_position_with_partial_tp(
+                symbol, target_direction, final_lots, h4_bars, regime=regime
+            )
             results.append({"action": "open", **open_result})
             if not open_result["success"]:
                 return {"success": False, "results": results}

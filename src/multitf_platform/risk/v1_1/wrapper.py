@@ -10,6 +10,7 @@ from ...strategy.frozen.v1_0_0 import SignalDecision
 from .regime import RegimeDetector, MarketRegime
 from .correlation import CorrelationRiskChecker
 from .kelly import KellySizer
+from .session_filter import SessionFilter, SessionStatus
 
 
 class Action(Enum):
@@ -83,6 +84,7 @@ class RiskWrapper:
         self.regime = RegimeDetector()
         self.correlation = CorrelationRiskChecker()
         self.kelly = KellySizer()
+        self.session = SessionFilter(block_asian=True)
     
     def apply(
         self,
@@ -157,7 +159,22 @@ class RiskWrapper:
                 sub_reasons=sub_reasons
             )
         
-        # 4. Volatility gate
+        # 4. Session filter (London + NY only)
+        session_status, session_scale, session_reason = self.session.check()
+        if session_status == SessionStatus.BLOCKED:
+            sub_reasons.append(session_reason)
+            return WrappedDecision(
+                action=Action.BLOCK,
+                original_signal=signal,
+                position_scale=0.0,
+                reason="Session filter blocked",
+                sub_reasons=sub_reasons
+            )
+        position_scale *= session_scale
+        if session_scale < 1.0:
+            sub_reasons.append(session_reason)
+        
+        # 5. Volatility gate
         vol_scale, vol_reason = self._check_volatility(h1_bars)
         if vol_scale == 0.0:
             sub_reasons.append(vol_reason)
@@ -172,7 +189,7 @@ class RiskWrapper:
         if vol_scale < 1.0:
             sub_reasons.append(vol_reason)
         
-        # 4. Spread filter
+        # 6. Spread filter
         if spread_points is not None:
             spread_ok, spread_reason = self._check_spread(h1_bars, spread_points)
             if not spread_ok:
@@ -185,7 +202,7 @@ class RiskWrapper:
                     sub_reasons=sub_reasons
                 )
         
-        # 5. Flip/chop filter
+        # 7. Flip/chop filter
         flip_ok, flip_reason = self._check_flip_chop(signal, h1_bars)
         if not flip_ok:
             sub_reasons.append(flip_reason)
@@ -197,7 +214,7 @@ class RiskWrapper:
                 sub_reasons=sub_reasons
             )
         
-        # 6. Trade throttle
+        # 8. Trade throttle
         throttle_ok, throttle_reason = self._check_trade_throttle(signal)
         if not throttle_ok:
             sub_reasons.append(throttle_reason)
@@ -209,7 +226,7 @@ class RiskWrapper:
                 sub_reasons=sub_reasons
             )
         
-        # 7. Regime detection
+        # 9. Regime detection
         regime = self.regime.detect(h1_bars)
         adj = self.regime.get_position_adjustments()
         if adj["block_new"]:
@@ -225,11 +242,11 @@ class RiskWrapper:
         if adj["scale"] < 1.0:
             sub_reasons.append(f"Regime: {regime.value} (scale {adj['scale']:.0%})")
         
-        # 8. Correlation risk check (requires existing_positions dict)
+        # 10. Correlation risk check (requires existing_positions dict)
         # Note: existing_positions passed via h1_bars metadata if available
         # This is checked at execution time, not signal time
         
-        # 9. Position sizing (volatility targeting + Kelly)
+        # 11. Position sizing (volatility targeting + Kelly)
         size_scale, size_reason = self._calculate_position_size(h1_bars, equity)
         position_scale *= size_scale
         if size_scale < 1.0:
