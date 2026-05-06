@@ -559,7 +559,7 @@ class MT5Executor:
     
     def execute(self, symbol: str, target_direction: int, size_lots: float,
                 h4_bars: pd.DataFrame = None, h1_bars: pd.DataFrame = None,
-                equity: float = 300.0, scale: float = 1.0) -> dict:
+                equity: float = 10000.0, scale: float = 1.0) -> dict:
         """Execute target position: close if needed, then open if needed.
         
         Incorporates Kelly sizing, correlation checks, and regime adjustments.

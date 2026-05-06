@@ -124,7 +124,7 @@ def backtest(
 @app.command()
 def paper_trade(
     symbol: str = typer.Option("XAUUSD", help="Symbol"),
-    equity: float = typer.Option(300.0, help="Initial equity"),
+    equity: float = typer.Option(10000.0, help="Initial equity"),
     leverage: int = typer.Option(1000, help="Account leverage"),
     circuit_breakers: bool = typer.Option(False, help="Enable circuit breakers (disabled by default for backtest)"),
     save: bool = typer.Option(False, help="Save final state to disk"),

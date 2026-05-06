@@ -111,8 +111,8 @@ def build_portfolio_equity(results, weights):
             ec = normalized[symbol].reindex(common_idx, method="ffill").fillna(1.0)
             portfolio += ec * w
     
-    # Scale to $300 initial equity
-    portfolio *= 300.0
+    # Scale to $10,000 initial equity
+    portfolio *= 10000.0
     return portfolio
 
 

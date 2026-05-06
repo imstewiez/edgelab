@@ -141,7 +141,7 @@ class BrokerConfig(BaseModel):
     
     adapter: Literal["mock", "paper", "mt5", "oanda", "ig"] = "paper"
     symbol: str = "XAUUSD.s"
-    initial_equity: float = Field(default=300.0, ge=10.0)
+    initial_equity: float = Field(default=10000.0, ge=10.0)
     leverage: int = Field(default=1000, ge=1, le=2000)
     account_currency: str = "USD"
     execution_mode: Literal["quote_replay", "live"] = "quote_replay"

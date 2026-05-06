@@ -42,9 +42,9 @@ def run_paper_trade_backtest(symbol="XAUUSD"):
             total_drawdown_kill_pct=50.0,    # Max allowed
         )
     )
-    # $300 demo account with realistic slippage
+    # $10,000 account with realistic slippage
     broker_cfg = BrokerConfig(
-        initial_equity=300.0,
+        initial_equity=10000.0,
         leverage=1000,
         commission_per_lot=7.0,
         min_lot_size=0.01,

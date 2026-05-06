@@ -16,7 +16,7 @@ from multitf_platform.strategy.edges.session_momentum import SessionMomentumEngi
 from multitf_platform.strategy.edges.gap_fade import GapFadeEngine
 
 
-def backtest_stat_arb(pair: tuple, h1_data: dict, equity: float = 300.0):
+def backtest_stat_arb(pair: tuple, h1_data: dict, equity: float = 10000.0):
     """Backtest StatArb on historical H1 bars."""
     leg1, leg2 = pair
     engine = StatArbEngine(pair)
@@ -89,7 +89,7 @@ def backtest_stat_arb(pair: tuple, h1_data: dict, equity: float = 300.0):
     }
 
 
-def backtest_session_momentum(symbol: str, h1_data: pd.DataFrame, equity: float = 300.0):
+def backtest_session_momentum(symbol: str, h1_data: pd.DataFrame, equity: float = 10000.0):
     """Backtest Session Momentum on historical H1 bars."""
     engine = SessionMomentumEngine(symbol)
     
@@ -121,7 +121,7 @@ def backtest_session_momentum(symbol: str, h1_data: pd.DataFrame, equity: float 
     }
 
 
-def backtest_gap_fade(symbol: str, h1_data: pd.DataFrame, equity: float = 300.0):
+def backtest_gap_fade(symbol: str, h1_data: pd.DataFrame, equity: float = 10000.0):
     """Backtest Gap Fade on historical H1 bars."""
     engine = GapFadeEngine(symbol)
     

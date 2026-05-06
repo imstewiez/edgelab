@@ -83,7 +83,7 @@ class GapFadeEngine:
     def generate_signal(
         self,
         h1_bars: pd.DataFrame,
-        equity: float = 300.0,
+        equity: float = 10000.0,
         now_utc: Optional[pd.Timestamp] = None,
     ) -> GapFadeSignal:
         """Generate gap fade signal.

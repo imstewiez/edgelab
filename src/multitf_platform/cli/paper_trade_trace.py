@@ -31,7 +31,7 @@ def trace_execution(symbol="XAUUSD", n_bars=200):
             total_drawdown_kill_pct=50.0,
         )
     )
-    broker_cfg = BrokerConfig(initial_equity=300.0, leverage=1000)
+    broker_cfg = BrokerConfig(initial_equity=10000.0, leverage=1000)
     
     strategy = MultiTFStrategy(FrozenStrategyConfig())
     risk = RiskWrapper(risk_cfg)

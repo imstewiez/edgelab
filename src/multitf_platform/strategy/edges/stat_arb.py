@@ -92,7 +92,7 @@ class StatArbEngine:
         self,
         leg1_bars: pd.DataFrame,
         leg2_bars: pd.DataFrame,
-        equity: float = 300.0,
+        equity: float = 10000.0,
         now_utc: Optional[pd.Timestamp] = None,
     ) -> StatArbSignal:
         """Generate pairs trading signal from H1 bar data for both legs.
@@ -215,7 +215,7 @@ class StatArbEngine:
         if status == PairStatus.FLAT:
             return 0, 0, 0.0, 0.0
         
-        # Base lot size for $300 account: minimum 0.01
+        # Base lot size for $10k account: minimum 0.01
         base_size = 0.01
         
         if status == PairStatus.LONG_SPREAD:

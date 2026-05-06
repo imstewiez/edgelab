@@ -203,16 +203,16 @@ def api_stats():
         for pt in equity_history:
             eq_curve.append({
                 "time": pt.get("time", ""),
-                "equity": pt.get("equity", 300),
+                "equity": pt.get("equity", 10000),
             })
     elif profits:
-        running = 300.0
+        running = 10000.0
         eq_curve.append({"time": "", "equity": running})
         for p in profits:
             running += p
             eq_curve.append({"time": "", "equity": running})
     else:
-        eq_curve = [{"time": "", "equity": 300.0}]
+        eq_curve = [{"time": "", "equity": 10000.0}]
     
     # Calculate drawdown
     peak = 0
@@ -296,7 +296,7 @@ def api_risk():
     if mt5:
         positions = mt5.positions_get()
         account = mt5.account_info()
-        equity = account.equity if account else 300.0
+        equity = account.equity if account else 10000.0
         
         if positions:
             for p in positions:
