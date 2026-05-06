@@ -1,11 +1,16 @@
 """Real MT5 order execution via MetaTrader5 Python API.
 
 Places market orders and tracks positions.
+Incorporates Kelly Criterion sizing, correlation risk checks, and regime adjustments.
 """
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict
 from enum import Enum
+
+from ...risk.v1_1.kelly import KellySizer
+from ...risk.v1_1.correlation import CorrelationRiskChecker
+from ...risk.v1_1.regime import RegimeDetector, MarketRegime
 
 
 class OrderSide(Enum):
@@ -21,10 +26,17 @@ class MT5Executor:
     - Closing positions
     - Flipping direction (close + open)
     - Position sizing based on allocated equity
+    - Kelly Criterion sizing
+    - Correlation risk checks
+    - Regime-based adjustments
     """
     
-    def __init__(self, mt5_module):
+    def __init__(self, mt5_module, symbols: list = None):
         self.mt5 = mt5_module
+        self.symbols = symbols or []
+        self.kelly_sizer = KellySizer()
+        self.correlation_checker = CorrelationRiskChecker()
+        self.regime_detector = RegimeDetector()
     
     def get_position(self, symbol: str) -> Optional[dict]:
         """Check if we have an open position for symbol."""
@@ -298,13 +310,21 @@ class MT5Executor:
         
         return {"success": True, "ticket": pos["ticket"], "sl": sl, "tp": tp}
     
-    def execute(self, symbol: str, target_direction: int, size_lots: float, h4_bars: pd.DataFrame = None) -> dict:
+    def execute(self, symbol: str, target_direction: int, size_lots: float,
+                h4_bars: pd.DataFrame = None, h1_bars: pd.DataFrame = None,
+                equity: float = 300.0, scale: float = 1.0) -> dict:
         """Execute target position: close if needed, then open if needed.
+        
+        Incorporates Kelly sizing, correlation checks, and regime adjustments.
         
         Args:
             symbol: MT5 symbol
             target_direction: 1=LONG, -1=SHORT, 0=FLAT
-            size_lots: Desired lot size for new position
+            size_lots: Desired lot size for new position (fallback)
+            h4_bars: H4 bars for SL/TP calculation
+            h1_bars: H1 bars for regime/correlation checks
+            equity: Current account equity
+            scale: Portfolio allocation scale
         """
         current = self.get_position(symbol)
         current_direction = 0
@@ -321,6 +341,9 @@ class MT5Executor:
         
         # Close existing if any
         if current_direction != 0:
+            # Record trade result for Kelly before closing
+            if current:
+                self.add_trade_result(current.get("profit", 0.0))
             close_result = self.close_position(symbol)
             results.append({"action": "close", **close_result})
             if not close_result["success"]:
@@ -328,17 +351,52 @@ class MT5Executor:
         
         # Open new if target is non-zero
         if target_direction != 0:
-            open_result = self.open_position(symbol, target_direction, size_lots, h4_bars)
+            # Get Kelly fraction
+            kelly_frac = self.get_kelly_fraction()
+            
+            # Get regime
+            regime = None
+            if h1_bars is not None:
+                regime = self.regime_detector.detect(h1_bars)
+            
+            # Update correlation prices
+            if h1_bars is not None:
+                self.update_correlation_prices(h1_bars, symbol)
+            
+            # Check correlation/portfolio risk
+            portfolio_positions = self.get_portfolio_positions()
+            allow, risk_scale, risk_reason = self._check_risk(
+                symbol, target_direction, h1_bars, portfolio_positions
+            )
+            
+            if not allow:
+                results.append({"action": "block", "reason": risk_reason})
+                return {"success": True, "action": "block", "results": results, "reason": risk_reason}
+            
+            # Calculate final lot size
+            final_scale = scale * risk_scale
+            final_lots = self.calculate_lot_size(
+                symbol, equity, final_scale,
+                kelly_fraction=kelly_frac, regime=regime
+            )
+            
+            results.append({"action": "risk_check", "kelly": kelly_frac,
+                           "regime": regime, "risk_scale": risk_scale,
+                           "reason": risk_reason, "final_lots": final_lots})
+            
+            open_result = self.open_position(symbol, target_direction, final_lots, h4_bars)
             results.append({"action": "open", **open_result})
             if not open_result["success"]:
                 return {"success": False, "results": results}
         
         return {"success": True, "results": results}
     
-    def calculate_lot_size(self, symbol: str, equity: float, scale: float = 1.0) -> float:
+    def calculate_lot_size(self, symbol: str, equity: float, scale: float = 1.0,
+                           kelly_fraction: float = None, regime: MarketRegime = None) -> float:
         """Calculate lot size based on allocated equity and scale.
         
         Uses MT5 symbol info for contract size and lot constraints.
+        Integrates Kelly Criterion and regime adjustments.
         """
         info = self.mt5.symbol_info(symbol)
         if info is None:
@@ -352,8 +410,75 @@ class MT5Executor:
         base = equity / 100000.0
         raw = base * scale
         
+        # Apply Kelly fraction if available
+        if kelly_fraction is not None:
+            raw *= kelly_fraction
+        
+        # Apply regime adjustment
+        if regime == MarketRegime.VOLATILE:
+            raw *= 0.5  # 50% reduction in volatile markets
+        elif regime == MarketRegime.RANGING:
+            raw *= 0.7  # 30% reduction in ranging markets
+        elif regime == MarketRegime.QUIET:
+            raw *= 0.0  # Block in quiet markets
+        
         # Round to lot step
         lots = round(raw / lot_step) * lot_step
         lots = max(min_lot, min(max_lot, lots))
         
         return lots
+    
+    def _check_risk(self, symbol: str, target_direction: int, h1_bars: pd.DataFrame = None,
+                    portfolio_positions: dict = None) -> tuple[bool, float, str]:
+        """Check correlation and regime risk before opening.
+        
+        Returns:
+            (allow: bool, scale: float, reason: str)
+        """
+        # Regime check
+        regime = MarketRegime.UNKNOWN
+        if h1_bars is not None:
+            regime = self.regime_detector.detect(h1_bars)
+            if regime == MarketRegime.VOLATILE:
+                return True, 0.5, "Volatile regime: 50% size"
+            elif regime == MarketRegime.RANGING:
+                return True, 0.7, "Ranging regime: 30% size"
+            elif regime == MarketRegime.QUIET:
+                return False, 0.0, "Quiet regime: blocked"
+        
+        # Correlation check
+        if portfolio_positions is not None:
+            corr_result = self.correlation_checker.check_correlation(
+                symbol, target_direction, portfolio_positions
+            )
+            if not corr_result["allowed"]:
+                return False, 0.0, corr_result["reason"]
+            if corr_result["scale"] < 1.0:
+                return True, corr_result["scale"], corr_result["reason"]
+        
+        return True, 1.0, "OK"
+    
+    def add_trade_result(self, profit: float):
+        """Record trade result for Kelly Criterion updates."""
+        self.kelly_sizer.add_trade(profit)
+    
+    def get_kelly_fraction(self, default: float = 0.02) -> float:
+        """Get Kelly fraction based on trade history."""
+        return self.kelly_sizer.calculate(min_trades=10)
+    
+    def get_portfolio_positions(self, symbols: list = None) -> dict:
+        """Get current portfolio positions for correlation checking."""
+        syms = symbols or self.symbols
+        positions = {}
+        for sym in syms:
+            pos = self.get_position(sym)
+            if pos:
+                positions[sym] = 1 if pos["type"] == 0 else -1
+        return positions
+    
+    def update_correlation_prices(self, bars: pd.DataFrame, symbol: str):
+        """Feed latest price to correlation checker from H1 bars."""
+        if bars is not None and len(bars) > 0:
+            last_close = bars["close"].iloc[-1]
+            last_time = bars.index[-1] if hasattr(bars.index[-1], "strftime") else pd.Timestamp.now()
+            self.correlation_checker.update_price(symbol, last_close, last_time)

@@ -63,7 +63,7 @@ def main():
         print(f"ERROR: Failed to connect: {e}")
         return 1
     
-    executor = MT5Executor(mt5)
+    executor = MT5Executor(mt5, symbols=ASSETS)
     
     try:
         account = adapter.get_account_info()
@@ -124,22 +124,24 @@ def main():
                 else:
                     print(f"  Current MT5 position: FLAT")
                 
-                # Calculate lot size
-                if wrapped.final_direction != 0:
-                    lots = executor.calculate_lot_size(symbol, alloc_equity, wrapped.position_scale)
-                    print(f"  Target lot size: {lots:.2f}")
-                else:
-                    lots = 0.0
-                
                 # Execute if direction changed
                 if wrapped.final_direction != current_dir:
                     print(f"  >>> EXECUTING: {current_dir} -> {wrapped.final_direction}")
-                    result = executor.execute(symbol, wrapped.final_direction, lots, h4)
+                    result = executor.execute(
+                        symbol, wrapped.final_direction, 0.0,
+                        h4_bars=h4, h1_bars=h1,
+                        equity=alloc_equity, scale=wrapped.position_scale
+                    )
                     
                     for r in result.get("results", []):
                         if r["action"] == "close":
                             print(f"  >>> CLOSED: P&L ${r.get('profit', 0):+.2f}")
                             executions.append({"symbol": symbol, "action": "CLOSE", "profit": r.get("profit", 0)})
+                        elif r["action"] == "risk_check":
+                            print(f"  >>> RISK: Kelly={r.get('kelly', 0):.4f}, Regime={r.get('regime', 'unknown')}, Scale={r.get('risk_scale', 1.0):.2f}, Reason={r.get('reason', '')}")
+                            print(f"  >>> FINAL LOTS: {r.get('final_lots', 0):.2f}")
+                        elif r["action"] == "block":
+                            print(f"  >>> BLOCKED: {r.get('reason', '')}")
                         elif r["action"] == "open":
                             sl = r.get('sl', 0)
                             tp = r.get('tp', 0)

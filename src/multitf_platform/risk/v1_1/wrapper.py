@@ -7,6 +7,9 @@ import numpy as np
 
 from ...config.models import RiskWrapperConfig
 from ...strategy.frozen.v1_0_0 import SignalDecision
+from .regime import RegimeDetector, MarketRegime
+from .correlation import CorrelationRiskChecker
+from .kelly import KellySizer
 
 
 class Action(Enum):
@@ -77,6 +80,9 @@ class RiskWrapper:
     def __init__(self, config: RiskWrapperConfig):
         self.config = config
         self.state = RiskState()
+        self.regime = RegimeDetector()
+        self.correlation = CorrelationRiskChecker()
+        self.kelly = KellySizer()
     
     def apply(
         self,
@@ -203,7 +209,27 @@ class RiskWrapper:
                 sub_reasons=sub_reasons
             )
         
-        # 7. Position sizing (volatility targeting)
+        # 7. Regime detection
+        regime = self.regime.detect(h1_bars)
+        adj = self.regime.get_position_adjustments()
+        if adj["block_new"]:
+            sub_reasons.append(f"Regime: {regime.value} (blocking)")
+            return WrappedDecision(
+                action=Action.BLOCK,
+                original_signal=signal,
+                position_scale=0.0,
+                reason=f"Market regime blocked: {regime.value}",
+                sub_reasons=sub_reasons
+            )
+        position_scale *= adj["scale"]
+        if adj["scale"] < 1.0:
+            sub_reasons.append(f"Regime: {regime.value} (scale {adj['scale']:.0%})")
+        
+        # 8. Correlation risk check (requires existing_positions dict)
+        # Note: existing_positions passed via h1_bars metadata if available
+        # This is checked at execution time, not signal time
+        
+        # 9. Position sizing (volatility targeting + Kelly)
         size_scale, size_reason = self._calculate_position_size(h1_bars, equity)
         position_scale *= size_scale
         if size_scale < 1.0:
@@ -455,7 +481,7 @@ class RiskWrapper:
         return True, ""
     
     def _calculate_position_size(self, h1_bars: pd.DataFrame, equity: float) -> tuple:
-        """Calculate position scale based on volatility targeting."""
+        """Calculate position scale based on volatility targeting + Kelly."""
         cfg = self.config.sizing
         
         if len(h1_bars) < 20:
@@ -474,11 +500,19 @@ class RiskWrapper:
         # Target vol / realized vol = position scale
         vol_scale = cfg.target_annualized_vol_pct / realized_vol
         
-        # Clamp to min/max
-        vol_scale = max(cfg.min_position_scale, min(cfg.max_position_scale, vol_scale))
+        # Kelly Criterion scale (fraction of equity to risk)
+        kelly_frac = self.kelly.calculate(min_trades=10)
+        # Normalize Kelly fraction: max Kelly = 10% of equity, so scale = kelly / 0.10
+        kelly_scale = kelly_frac / 0.10
         
-        return vol_scale, "Vol sizing: target %.1f%% / realized %.1f%% = %.2fx" % (
-            cfg.target_annualized_vol_pct, realized_vol, vol_scale)
+        # Combine: vol targeting × Kelly fraction
+        combined_scale = vol_scale * kelly_scale
+        
+        # Clamp to min/max
+        final_scale = max(cfg.min_position_scale, min(cfg.max_position_scale, combined_scale))
+        
+        return final_scale, "Vol=%.2f × Kelly=%.2f = %.2f" % (
+            vol_scale, kelly_scale, final_scale)
     
     def update_after_trade(self, pnl_pct: float, timestamp: pd.Timestamp):
         """Update risk state after a trade closes."""
