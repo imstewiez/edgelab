@@ -83,64 +83,81 @@ class MT5Executor:
         return self.mt5.ORDER_FILLING_FOK
     
     def close_position(self, symbol: str) -> dict:
-        """Close all positions for symbol."""
-        pos = self.get_position(symbol)
-        if not pos:
+        """Close ALL positions for symbol (handles partial TP splits)."""
+        positions = self.mt5.positions_get(symbol=symbol)
+        if not positions or len(positions) == 0:
             return {"success": True, "message": "No position to close"}
         
         tick = self.mt5.symbol_info_tick(symbol)
         if tick is None:
             return {"success": False, "error": f"Cannot get tick for {symbol}"}
         
-        # Determine close price based on position type
-        if pos["type"] == 0:  # Buy position -> close at bid
-            price = tick.bid
-            order_type = self.mt5.ORDER_TYPE_SELL
-        else:  # Sell position -> close at ask
-            price = tick.ask
-            order_type = self.mt5.ORDER_TYPE_BUY
+        results = []
+        total_profit = 0.0
+        total_volume = 0.0
         
-        request = {
-            "action": self.mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": pos["volume"],
-            "type": order_type,
-            "price": price,
-            "deviation": 10,
-            "magic": 234000,
-            "comment": "MultiTF close",
-            "type_time": self.mt5.ORDER_TIME_GTC,
-            "type_filling": self._get_filling_mode(symbol),
-            "position": pos["ticket"],
-        }
-        
-        result = self.mt5.order_send(request)
-        if result.retcode != self.mt5.TRADE_RETCODE_DONE:
-            return {"success": False, "error": f"Close failed: {result.retcode} {result.comment}"}
-        
-        close_price = getattr(result, 'price', price)
-        direction = 1 if pos["type"] == 0 else -1
-        
-        # Record trade for MAE/MFE tracking (simplified: use SL/TP as MAE/MFE proxies)
-        from ...risk.v1_1.wrapper import RiskWrapper
-        self.mae_mfe.record_trade(
-            symbol, direction, pos["price_open"], close_price,
-            sl=pos.get("sl", pos["price_open"]),
-            tp=pos.get("tp", pos["price_open"]),
-        )
-        
-        # Record for expectancy filter
-        # Note: actual P&L used from position
+        for pos in positions:
+            # Determine close price based on position type
+            if pos.type == 0:  # Buy position -> close at bid
+                price = tick.bid
+                order_type = self.mt5.ORDER_TYPE_SELL
+            else:  # Sell position -> close at ask
+                price = tick.ask
+                order_type = self.mt5.ORDER_TYPE_BUY
+            
+            request = {
+                "action": self.mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": pos.volume,
+                "type": order_type,
+                "price": price,
+                "deviation": 10,
+                "magic": 234000,
+                "comment": "MultiTF close",
+                "type_time": self.mt5.ORDER_TIME_GTC,
+                "type_filling": self._get_filling_mode(symbol),
+                "position": pos.ticket,
+            }
+            
+            result = self.mt5.order_send(request)
+            if result.retcode != self.mt5.TRADE_RETCODE_DONE:
+                results.append({"ticket": pos.ticket, "error": f"Close failed: {result.retcode} {result.comment}"})
+                continue
+            
+            close_price = getattr(result, 'price', price)
+            direction = 1 if pos.type == 0 else -1
+            pnl = pos.profit + pos.swap
+            total_profit += pnl
+            total_volume += pos.volume
+            
+            # Record trade for MAE/MFE tracking
+            self.mae_mfe.record_trade(
+                symbol, direction, pos.price_open, close_price,
+                sl=pos.sl if pos.sl > 0 else pos.price_open,
+                tp=pos.tp if pos.tp > 0 else pos.price_open,
+            )
+            
+            results.append({
+                "ticket": pos.ticket,
+                "price": close_price,
+                "volume": pos.volume,
+                "profit": pnl,
+            })
         
         # Clear time decay tracking
         self.time_decay.record_exit(symbol)
         
+        # Record combined P&L for expectancy filter
+        if total_volume > 0:
+            # We don't have per-trade expectancy here, but the wrapper handles it
+            pass
+        
         return {
-            "success": True,
-            "ticket": getattr(result, 'order', 0),
-            "price": close_price,
-            "volume": getattr(result, 'volume', pos["volume"]),
-            "profit": pos["profit"],
+            "success": len(results) > 0,
+            "results": results,
+            "total_profit": total_profit,
+            "total_volume": total_volume,
+            "positions_closed": len(results),
         }
     
     def _calculate_sl_tp(self, symbol: str, direction: int, entry_price: float,
