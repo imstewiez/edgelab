@@ -1,0 +1,70 @@
+================================================================================
+EXPLORATORY ANALYSIS REPORT
+Generated: 2026-05-05T16:24:24.353581
+================================================================================
+
+--- DATA COVERAGE & QUALITY ---
+EURUSD   M1  | Bars: 99,820 | Duration:    98d | Coverage:  71.0% | Gaps: 16 | Dups: 0
+EURUSD   M5  | Bars: 99,964 | Duration:   490d | Coverage:  70.8% | Gaps: 75 | Dups: 0
+EURUSD   M15 | Bars: 100,641 | Duration:  1477d | Coverage:  71.0% | Gaps: 216 | Dups: 0
+EURUSD   H1  | Bars: 27,490 | Duration:  1612d | Coverage:  71.1% | Gaps: 235 | Dups: 0
+EURUSD   H4  | Bars:  6,876 | Duration:  1612d | Coverage:  71.1% | Gaps: 6875 | Dups: 0
+EURUSD   D1  | Bars:  1,147 | Duration:  1611d | Coverage:  71.2% | Gaps: 1146 | Dups: 0
+XAUUSD   M1  | Bars: 99,820 | Duration:   104d | Coverage:  66.9% | Gaps: 73 | Dups: 0
+XAUUSD   M5  | Bars: 99,964 | Duration:   518d | Coverage:  67.0% | Gaps: 366 | Dups: 0
+XAUUSD   M15 | Bars: 99,988 | Duration:  1547d | Coverage:  67.3% | Gaps: 254 | Dups: 0
+XAUUSD   H1  | Bars: 26,072 | Duration:  1612d | Coverage:  67.4% | Gaps: 264 | Dups: 0
+XAUUSD   H4  | Bars:  6,827 | Duration:  1612d | Coverage:  70.6% | Gaps: 6826 | Dups: 0
+XAUUSD   D1  | Bars:  1,138 | Duration:  1611d | Coverage:  70.6% | Gaps: 1137 | Dups: 0
+NAS100   M1  | Bars: 99,820 | Duration:   103d | Coverage:  67.3% | Gaps: 74 | Dups: 0
+NAS100   M5  | Bars: 99,964 | Duration:   522d | Coverage:  66.4% | Gaps: 451 | Dups: 0
+NAS100   M15 | Bars: 100,142 | Duration:  1569d | Coverage:  66.5% | Gaps: 267 | Dups: 0
+NAS100   H1  | Bars: 26,039 | Duration:  1612d | Coverage:  67.3% | Gaps: 274 | Dups: 0
+NAS100   H4  | Bars:  6,823 | Duration:  1612d | Coverage:  70.6% | Gaps: 6822 | Dups: 0
+NAS100   D1  | Bars:  1,141 | Duration:  1611d | Coverage:  70.8% | Gaps: 1140 | Dups: 0
+
+--- RETURN CHARACTERISTICS ---
+EURUSD   M1  | AnnRet:  -14.89% | AnnVol:   9.24% | Sharpe: -1.612 | Skew:  0.183 | Kurt: 260.908
+EURUSD   M5  | AnnRet:   12.28% | AnnVol:   9.69% | Sharpe:  1.267 | Skew: -0.350 | Kurt:  70.998
+EURUSD   M15 | AnnRet:    2.83% | AnnVol:   9.80% | Sharpe:  0.289 | Skew:  0.084 | Kurt:  36.051
+EURUSD   H1  | AnnRet:    1.07% | AnnVol:   9.68% | Sharpe:  0.111 | Skew:  0.095 | Kurt:  15.356
+EURUSD   H4  | AnnRet:    1.13% | AnnVol:   9.61% | Sharpe:  0.117 | Skew:  0.109 | Kurt:   5.580
+EURUSD   D1  | AnnRet:    1.15% | AnnVol:   9.39% | Sharpe:  0.123 | Skew:  0.269 | Kurt:   1.560
+XAUUSD   M1  | AnnRet:  -24.30% | AnnVol:  49.81% | Sharpe: -0.488 | Skew: -1.037 | Kurt:  40.525
+XAUUSD   M5  | AnnRet:   57.76% | AnnVol:  29.16% | Sharpe:  1.981 | Skew: -0.880 | Kurt:  50.076
+XAUUSD   M15 | AnnRet:   32.21% | AnnVol:  22.24% | Sharpe:  1.448 | Skew: -0.631 | Kurt:  65.684
+XAUUSD   H1  | AnnRet:   31.70% | AnnVol:  21.72% | Sharpe:  1.459 | Skew: -1.154 | Kurt:  32.778
+XAUUSD   H4  | AnnRet:   30.10% | AnnVol:  21.03% | Sharpe:  1.431 | Skew: -0.357 | Kurt:  11.748
+XAUUSD   D1  | AnnRet:   30.26% | AnnVol:  21.52% | Sharpe:  1.406 | Skew: -0.700 | Kurt:   7.148
+NAS100   M1  | AnnRet:   45.33% | AnnVol:  26.79% | Sharpe:  1.692 | Skew: -0.053 | Kurt: 128.922
+NAS100   M5  | AnnRet:   30.40% | AnnVol:  27.67% | Sharpe:  1.099 | Skew: -0.563 | Kurt: 258.727
+NAS100   M15 | AnnRet:   20.36% | AnnVol:  28.36% | Sharpe:  0.718 | Skew: -0.407 | Kurt:  63.875
+NAS100   H1  | AnnRet:   19.34% | AnnVol:  28.15% | Sharpe:  0.687 | Skew:  0.156 | Kurt:  30.187
+NAS100   H4  | AnnRet:   18.56% | AnnVol:  28.12% | Sharpe:  0.660 | Skew:  0.327 | Kurt:  17.329
+NAS100   D1  | AnnRet:   18.24% | AnnVol:  27.62% | Sharpe:  0.661 | Skew:  0.149 | Kurt:   5.053
+
+--- DRAWDOWN & RISK ---
+EURUSD   M1  | MaxDD:   -5.26% | AvgRange:    0.00016 | LowVol%:  33.0 | HighVol%:  33.0
+EURUSD   M5  | MaxDD:   -5.35% | AvgRange:    0.00040 | LowVol%:  33.0 | HighVol%:  33.0
+EURUSD   M15 | MaxDD:  -12.71% | AvgRange:    0.00070 | LowVol%:  33.0 | HighVol%:  33.0
+EURUSD   H1  | MaxDD:  -16.98% | AvgRange:    0.00144 | LowVol%:  32.9 | HighVol%:  32.9
+EURUSD   H4  | MaxDD:  -16.80% | AvgRange:    0.00302 | LowVol%:  32.5 | HighVol%:  32.5
+EURUSD   D1  | MaxDD:  -16.25% | AvgRange:    0.00799 | LowVol%:  30.2 | HighVol%:  30.2
+XAUUSD   M1  | MaxDD:  -26.65% | AvgRange:    3.62155 | LowVol%:  33.0 | HighVol%:  33.0
+XAUUSD   M5  | MaxDD:  -26.30% | AvgRange:    4.21536 | LowVol%:  33.0 | HighVol%:  33.0
+XAUUSD   M15 | MaxDD:  -26.06% | AvgRange:    4.14559 | LowVol%:  33.0 | HighVol%:  33.0
+XAUUSD   H1  | MaxDD:  -24.42% | AvgRange:    8.32442 | LowVol%:  32.9 | HighVol%:  32.9
+XAUUSD   H4  | MaxDD:  -23.57% | AvgRange:   16.92878 | LowVol%:  32.5 | HighVol%:  32.5
+XAUUSD   D1  | MaxDD:  -20.83% | AvgRange:   44.42732 | LowVol%:  30.2 | HighVol%:  30.2
+NAS100   M1  | MaxDD:  -13.04% | AvgRange:   10.69899 | LowVol%:  33.0 | HighVol%:  33.0
+NAS100   M5  | MaxDD:  -26.44% | AvgRange:   20.08329 | LowVol%:  33.0 | HighVol%:  33.0
+NAS100   M15 | MaxDD:  -32.94% | AvgRange:   28.99200 | LowVol%:  33.0 | HighVol%:  33.0
+NAS100   H1  | MaxDD:  -37.00% | AvgRange:   59.74077 | LowVol%:  32.9 | HighVol%:  32.9
+NAS100   H4  | MaxDD:  -36.97% | AvgRange:  121.79513 | LowVol%:  32.5 | HighVol%:  32.5
+NAS100   D1  | MaxDD:  -35.49% | AvgRange:  337.90337 | LowVol%:  30.2 | HighVol%:  30.2
+
+--- CORRELATIONS (H1) ---
+        EURUSD  XAUUSD  NAS100
+EURUSD   1.000   0.351   0.267
+XAUUSD   0.351   1.000   0.151
+NAS100   0.267   0.151   1.000

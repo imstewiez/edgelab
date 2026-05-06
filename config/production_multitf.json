@@ -1,0 +1,115 @@
+{
+  "name": "MultiTF XAUUSD - Institutional Research Release",
+  "description": "H1 momentum with H4 trend confirmation. Cross-regime validated on 10 years of data.",
+  "version": "1.0.0",
+  "status": "RESEARCH_VALIDATED_NOT_LIVE_TESTED",
+  "account": {
+    "broker": "DPrime",
+    "account_number": 9922550,
+    "currency": "USD",
+    "commission_per_lot": 7.0,
+    "spread_type": "raw"
+  },
+  "symbol": {
+    "name": "XAUUSD.s",
+    "timeframe": "H1",
+    "lot_size": 100,
+    "pip_value": 1.0,
+    "min_history_bars": 5000
+  },
+  "strategy": {
+    "name": "MultiTF",
+    "type": "multi_timeframe_momentum",
+    "parameters": {
+      "h1_lookback": 100,
+      "h4_lookback": 50,
+      "description": "Long when H1 momentum > 0 AND H4 momentum > 0. Short when both < 0."
+    }
+  },
+  "risk_management": {
+    "position_sizing": "fixed_fractional",
+    "risk_per_trade_pct": 5.0,
+    "kelly_fraction": 0.5,
+    "max_daily_loss_pct": 2.0,
+    "max_position_size_lots": 0.25,
+    "equity_per_lot": 200000,
+    "max_spread_points": 30,
+    "max_drawdown_circuit_breaker_pct": 15.0,
+    "note": "Half-Kelly = 10.5% optimal f, but using 5% for conservatism"
+  },
+  "backtest_results": {
+    "data_period": "2016-05 to 2026-05",
+    "total_bars": 52323,
+    "combined_sharpe": 1.284,
+    "combined_ann_return_pct": 21.47,
+    "combined_ann_vol_pct": 16.72,
+    "combined_max_dd_pct": -13.78,
+    "combined_profit_factor": 1.72,
+    "combined_win_rate_pct": 42.07,
+    "combined_trades": 1626,
+    "bull_sharpe": 1.895,
+    "bull_ann_return_pct": 30.20,
+    "bull_max_dd_pct": -13.78,
+    "bull_pf": 1.84,
+    "sideways_sharpe": 0.868,
+    "sideways_ann_return_pct": 4.81,
+    "sideways_max_dd_pct": -6.41,
+    "sideways_pf": 1.06,
+    "monte_carlo_prob_profit_pct": 100.0,
+    "monte_carlo_median_sharpe": 1.34,
+    "monte_carlo_p5_sharpe": 0.94,
+    "monte_carlo_worst5_dd_pct": -22.90,
+    "walk_forward_windows": 49,
+    "walk_forward_positive_pct": 75.5,
+    "walk_forward_sharpe_mean": 1.396,
+    "walk_forward_sharpe_std": 2.429
+  },
+  "fee_analysis": {
+    "management_fee_pct": 2.0,
+    "performance_fee_pct": 20.0,
+    "gross_ann_return_pct": 21.47,
+    "estimated_net_ann_return_pct": 15.18,
+    "fee_drag_pct": 6.29
+  },
+  "investor_readiness_score": 4.0,
+  "readiness_scale": {
+    "5": "Seed money from friends/family possible",
+    "7": "Small allocator ($100K-$1M) might look",
+    "9": "Institutional capital ready"
+  },
+  "gaps_to_institutional": [
+    "No live track record (need 12-36 months)",
+    "Walk-forward Sharpe std = 2.43 (high variability)",
+    "Sideways PF = 1.06 (razor thin margin)",
+    "Single asset dependency",
+    "No regulatory registration",
+    "No audited track record",
+    "No tail risk management"
+  ],
+  "path_to_7_out_of_10": [
+    "Trade live for 12 months with Sharpe > 1.0",
+    "Add 1-2 uncorrelated strategies (different asset classes)",
+    "Implement half-Kelly position sizing (10.5% risk)",
+    "Add tail hedge (VIX, OTM options, or vol scaling)",
+    "Reduce max DD to <15% consistently"
+  ],
+  "path_to_9_out_of_10": [
+    "3-year audited track record via third party (MyFXBook, FundSeeder)",
+    "Sharpe > 1.5 sustained over 2+ years live",
+    "Max DD < 10% with proper tail hedging",
+    "$5M+ AUM from early investors",
+    "Regulatory registration (CTA/CPO or equivalent)"
+  ],
+  "deployment_checklist": {
+    "fund_account": false,
+    "run_forward_test_1month": false,
+    "run_forward_test_3month": false,
+    "run_forward_test_6month": false,
+    "run_forward_test_12month": false,
+    "verify_live_sharpe_above_1": false,
+    "register_myfxbook": false,
+    "approach_seed_investors": false,
+    "approach_small_allocators": false,
+    "regulatory_registration": false
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "mt5": {
+    "account": null,
+    "password": null,
+    "server": null,
+    "path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+  },
+  "symbols": [
+    {
+      "name": "EURUSD",
+      "mt5_name": "EURUSD.s",
+      "type": "forex"
+    },
+    {
+      "name": "XAUUSD",
+      "mt5_name": "XAUUSD.s",
+      "type": "commodity"
+    },
+    {
+      "name": "NAS100",
+      "mt5_name": "NAS100.s",
+      "type": "index"
+    }
+  ],
+  "timeframes": ["M1", "M5", "M15", "H1", "H4", "D1"],
+  "data": {
+    "raw_dir": "data/raw",
+    "processed_dir": "data/processed",
+    "database_path": "data/market_data.db",
+    "default_start": "2020-01-01",
+    "default_end": null
+  },
+  "risk": {
+    "max_position_pct": 0.02,
+    "max_daily_loss_pct": 0.05,
+    "kill_switch_drawdown_pct": 0.10
+  }
+}
