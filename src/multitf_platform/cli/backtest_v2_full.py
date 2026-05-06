@@ -60,6 +60,7 @@ class SimPosition:
     sl: float
     tp: float
     entry_time: pd.Timestamp
+    entry_bar: int = 0
     comment: str = ""
 
 
@@ -114,7 +115,7 @@ def calc_pip_size(symbol: str) -> float:
 
 def sim_open_position(state: PortfolioState, symbol: str, direction: int,
                       size_lots: float, price: float, sl: float, tp: float,
-                      timestamp: pd.Timestamp, comment: str = "") -> dict:
+                      timestamp: pd.Timestamp, bar_idx: int = 0, comment: str = "") -> dict:
     """Simulate opening a position with slippage and commission."""
     if symbol in state.positions:
         return {"success": False, "error": "Already have position"}
@@ -131,7 +132,7 @@ def sim_open_position(state: PortfolioState, symbol: str, direction: int,
     pos = SimPosition(
         symbol=symbol, direction=direction,
         entry_price=fill_price, size_lots=size_lots,
-        sl=sl, tp=tp, entry_time=timestamp, comment=comment
+        sl=sl, tp=tp, entry_time=timestamp, entry_bar=bar_idx, comment=comment
     )
     state.positions[symbol] = pos
     
@@ -246,6 +247,10 @@ def run_backtest(h1_data: dict, h4_data: dict) -> dict:
         for sym, price, reason in to_close:
             sim_close_position(state, sym, price, ts)
         
+        # Minimum hold time: 4 bars (don't close by signal change before 4 bars)
+        MIN_HOLD_BARS = 4
+        hold_blocked = {sym for sym, pos in state.positions.items() if (i - pos.entry_bar) < MIN_HOLD_BARS}
+        
         # --- MultiTF Signals ---
         for sym in MULTITF_ASSETS:
             if sym not in h1_data or sym not in h4_data:
@@ -264,7 +269,7 @@ def run_backtest(h1_data: dict, h4_data: dict) -> dict:
             current_pos = state.positions.get(sym)
             current_dir = current_pos.direction if current_pos else 0
             
-            if target_dir != current_dir:
+            if target_dir != current_dir and sym not in hold_blocked:
                 if current_pos:
                     sim_close_position(state, sym, prices[sym], ts)
                 if target_dir != 0:
@@ -273,15 +278,15 @@ def run_backtest(h1_data: dict, h4_data: dict) -> dict:
                     if target_dir == 1:
                         sl = recent["low"].min()
                         risk_dist = prices[sym] - sl
-                        tp = prices[sym] + risk_dist * 2.0
+                        tp = prices[sym] + risk_dist * 3.0
                     else:
                         sl = recent["high"].max()
                         risk_dist = sl - prices[sym]
-                        tp = prices[sym] - risk_dist * 2.0
+                        tp = prices[sym] - risk_dist * 3.0
                     
-                    size = max(0.01, round((alloc / 100000.0) * wrapped.position_scale, 2))
+                    size = max(0.01, round((alloc / 50000.0) * wrapped.position_scale, 2))
                     sim_open_position(state, sym, target_dir, size, prices[sym],
-                                     sl, tp, ts, comment="MultiTF")
+                                     sl, tp, ts, bar_idx=i, comment="MultiTF")
         
         # --- StatArb Signals ---
         for pair_name, engine in statarb_engines.items():
@@ -301,7 +306,7 @@ def run_backtest(h1_data: dict, h4_data: dict) -> dict:
                 current_pos = state.positions.get(leg)
                 current_dir = current_pos.direction if current_pos else 0
                 
-                if leg_dir != current_dir:
+                if leg_dir != current_dir and leg not in hold_blocked:
                     if current_pos:
                         sim_close_position(state, leg, prices[leg], ts)
                     if leg_dir != 0:
@@ -310,7 +315,7 @@ def run_backtest(h1_data: dict, h4_data: dict) -> dict:
                         sl = price * (0.99 if leg_dir == 1 else 1.01)
                         tp = price * (1.01 if leg_dir == 1 else 0.99)
                         sim_open_position(state, leg, leg_dir, leg_size, price,
-                                         sl, tp, ts, comment=f"StatArb_{pair_name}")
+                                         sl, tp, ts, bar_idx=i, comment=f"StatArb_{pair_name}")
         
         # --- Session Momentum ---
         for sym, engine in session_engines.items():
@@ -321,11 +326,11 @@ def run_backtest(h1_data: dict, h4_data: dict) -> dict:
             current_pos = state.positions.get(sym)
             current_dir = current_pos.direction if current_pos else 0
             
-            if sig.is_active and sig.direction != current_dir:
+            if sig.is_active and sig.direction != current_dir and sym not in hold_blocked:
                 if current_pos:
                     sim_close_position(state, sym, prices[sym], ts)
                 sim_open_position(state, sym, sig.direction, sig.size_lots, prices[sym],
-                                 sig.sl_price, sig.tp_price, ts, comment="Session")
+                                 sig.sl_price, sig.tp_price, ts, bar_idx=i, comment="Session")
             elif not sig.is_active and current_dir != 0 and current_pos and current_pos.comment == "Session":
                 sim_close_position(state, sym, prices[sym], ts)
         
@@ -338,11 +343,11 @@ def run_backtest(h1_data: dict, h4_data: dict) -> dict:
             current_pos = state.positions.get(sym)
             current_dir = current_pos.direction if current_pos else 0
             
-            if sig.is_active and sig.direction != current_dir:
+            if sig.is_active and sig.direction != current_dir and sym not in hold_blocked:
                 if current_pos:
                     sim_close_position(state, sym, prices[sym], ts)
                 sim_open_position(state, sym, sig.direction, sig.size_lots, prices[sym],
-                                 sig.sl_price, sig.tp_price, ts, comment="GapFade")
+                                 sig.sl_price, sig.tp_price, ts, bar_idx=i, comment="GapFade")
             elif not sig.is_active and current_dir != 0 and current_pos and current_pos.comment == "GapFade":
                 sim_close_position(state, sym, prices[sym], ts)
         

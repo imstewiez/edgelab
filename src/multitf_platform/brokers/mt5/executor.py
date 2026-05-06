@@ -214,7 +214,7 @@ class MT5Executor:
     
     def open_position(self, symbol: str, direction: int, size_lots: float,
                       h4_bars: pd.DataFrame = None,
-                      sl_mult: float = 1.0, tp_mult: float = 2.0,
+                      sl_mult: float = 1.0, tp_mult: float = 3.0,
                       comment: str = "MultiTF open",
                       sl: float = None, tp: float = None) -> dict:
         """Open a market order with SL/TP.
@@ -692,8 +692,8 @@ class MT5Executor:
         max_lot = info.volume_max
         lot_step = info.volume_step
         
-        # Base: proportional to equity, 1.0 lot per $100k
-        base = equity / 100000.0
+        # Base: proportional to equity, 1.0 lot per $50k
+        base = equity / 50000.0
         raw = base * scale
         
         # Apply Kelly fraction if available
