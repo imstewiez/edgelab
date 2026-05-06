@@ -569,6 +569,15 @@ def portfolio_live_v2(
 
 
 @app.command()
+def portfolio_live_v3(
+    dry_run: bool = typer.Option(False, help="Show signals only, no state changes"),
+):
+    """Run final unified portfolio v3: Edges Only (StatArb + Session + GapFade)."""
+    from .portfolio_live_v3 import main as _portfolio_live_v3
+    _portfolio_live_v3()
+
+
+@app.command()
 def portfolio_backtest():
     """Run portfolio backtest and show metrics."""
     from .portfolio_backtest import main as _portfolio_backtest
