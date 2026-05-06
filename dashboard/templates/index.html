@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MultiTF Trading Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --green: #3fb950;
+    --red: #f85149;
+    --orange: #f0883e;
+    --blue: #58a6ff;
+    --purple: #a371f7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+    line-height: 1.5;
+  }
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  header h1 { font-size: 1.3rem; color: var(--blue); }
+  .status-badge {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .status-online { background: rgba(63,185,80,0.15); color: var(--green); }
+  .status-offline { background: rgba(248,81,73,0.15); color: var(--red); }
+  .refresh-info { color: var(--muted); font-size: 0.8rem; }
+  .container { padding: 20px 24px; max-width: 1600px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+  }
+  .card h2 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .metric { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .metric:last-child { border-bottom: none; }
+  .metric-label { color: var(--muted); font-size: 0.85rem; }
+  .metric-value { font-weight: 600; font-family: monospace; }
+  .positive { color: var(--green); }
+  .negative { color: var(--red); }
+  .warning { color: var(--orange); }
+  .chart-container { position: relative; height: 240px; }
+  .positions-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .positions-table th { text-align: left; padding: 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 500; }
+  .positions-table td { padding: 8px; border-bottom: 1px solid var(--border); }
+  .positions-table tr:last-child td { border-bottom: none; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+  }
+  .badge-long { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-short { background: rgba(248,81,73,0.15); color: var(--red); }
+  .log-container { max-height: 320px; overflow-y: auto; font-size: 0.78rem; font-family: monospace; }
+  .log-line { padding: 3px 0; border-bottom: 1px solid rgba(48,54,61,0.5); }
+  .log-info { color: var(--text); }
+  .log-error { color: var(--red); }
+  .log-warn { color: var(--orange); }
+  .log-trade { color: var(--green); }
+  .log-block { color: var(--purple); }
+  .empty { color: var(--muted); text-align: center; padding: 20px; font-style: italic; }
+  .progress-bar {
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 6px;
+  }
+  .progress-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.5s;
+  }
+  .flex-2 { grid-column: span 2; }
+  @media (max-width: 900px) {
+    .flex-2 { grid-column: span 1; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🤖 MultiTF Trading Dashboard</h1>
+  <div style="display:flex;gap:12px;align-items:center;">
+    <span id="mt5-status" class="status-badge status-offline">MT5 Offline</span>
+    <span class="refresh-info">Auto-refresh: <span id="countdown">30</span>s</span>
+  </div>
+</header>
+
+<div class="container">
+  <div class="grid">
+    <!-- Account Overview -->
+    <div class="card">
+      <h2>💰 Account</h2>
+      <div id="account-metrics">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="card">
+      <h2>📊 Performance</h2>
+      <div id="stats-metrics">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Risk -->
+    <div class="card">
+      <h2>🛡️ Risk Monitor</h2>
+      <div id="risk-metrics">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Equity Chart -->
+    <div class="card flex-2">
+      <h2>📈 Equity Curve</h2>
+      <div class="chart-container">
+        <canvas id="equityChart"></canvas>
+      </div>
+    </div>
+
+    <!-- Positions -->
+    <div class="card flex-2">
+      <h2>🔥 Open Positions</h2>
+      <div id="positions-table">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Trade History -->
+    <div class="card flex-2">
+      <h2>📓 Trading Journal (Last 20)</h2>
+      <div id="trade-history">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Logs -->
+    <div class="card flex-2">
+      <h2>📝 Live Logs</h2>
+      <div id="logs" class="log-container">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let equityChart = null;
+let countdown = 30;
+
+async function fetchData(endpoint) {
+  try {
+    const res = await fetch(endpoint);
+    return await res.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+function formatCurrency(n) {
+  if (n === undefined || n === null) return '-';
+  return '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+function formatPct(n) {
+  if (n === undefined || n === null) return '-';
+  return n.toFixed(2) + '%';
+}
+
+function renderAccount(data) {
+  const el = document.getElementById('account-metrics');
+  if (!data || !data.connected) {
+    el.innerHTML = '<div class="empty">MT5 disconnected</div>';
+    document.getElementById('mt5-status').textContent = 'MT5 Offline';
+    document.getElementById('mt5-status').className = 'status-badge status-offline';
+    return;
+  }
+  document.getElementById('mt5-status').textContent = 'MT5 Online';
+  document.getElementById('mt5-status').className = 'status-badge status-online';
+  
+  const dd = (data.balance - data.equity) / data.balance * 100;
+  el.innerHTML = `
+    <div class="metric"><span class="metric-label">Balance</span><span class="metric-value">${formatCurrency(data.balance)}</span></div>
+    <div class="metric"><span class="metric-label">Equity</span><span class="metric-value ${data.equity >= data.balance ? 'positive' : 'negative'}">${formatCurrency(data.equity)}</span></div>
+    <div class="metric"><span class="metric-label">Margin</span><span class="metric-value">${formatCurrency(data.margin)}</span></div>
+    <div class="metric"><span class="metric-label">Free Margin</span><span class="metric-value">${formatCurrency(data.margin_free)}</span></div>
+    <div class="metric"><span class="metric-label">Margin Level</span><span class="metric-value ${data.margin_level < 150 ? 'negative' : ''}">${formatPct(data.margin_level)}</span></div>
+    <div class="metric"><span class="metric-label">Leverage</span><span class="metric-value">1:${data.leverage}</span></div>
+    <div class="metric"><span class="metric-label">Intraday DD</span><span class="metric-value ${dd > 0 ? 'negative' : 'positive'}">${formatPct(dd)}</span></div>
+  `;
+}
+
+function renderStats(data) {
+  const el = document.getElementById('stats-metrics');
+  if (!data) { el.innerHTML = '<div class="empty">No data</div>'; return; }
+  el.innerHTML = `
+    <div class="metric"><span class="metric-label">Total Trades</span><span class="metric-value">${data.total_trades}</span></div>
+    <div class="metric"><span class="metric-label">Win Rate</span><span class="metric-value ${data.win_rate >= 50 ? 'positive' : 'negative'}">${formatPct(data.win_rate)}</span></div>
+    <div class="metric"><span class="metric-label">Wins / Losses</span><span class="metric-value"><span class="positive">${data.wins}</span> / <span class="negative">${data.losses}</span></span></div>
+    <div class="metric"><span class="metric-label">Avg Win</span><span class="metric-value positive">${formatCurrency(data.avg_win)}</span></div>
+    <div class="metric"><span class="metric-label">Avg Loss</span><span class="metric-value negative">${formatCurrency(data.avg_loss)}</span></div>
+    <div class="metric"><span class="metric-label">Profit Factor</span><span class="metric-value ${data.profit_factor >= 1.5 ? 'positive' : 'warning'}">${data.profit_factor.toFixed(2)}</span></div>
+    <div class="metric"><span class="metric-label">Total P&L</span><span class="metric-value ${data.total_pnl >= 0 ? 'positive' : 'negative'}">${formatCurrency(data.total_pnl)}</span></div>
+    <div class="metric"><span class="metric-label">Max Drawdown</span><span class="metric-value negative">${formatPct(data.max_drawdown_pct)}</span></div>
+  `;
+  
+  // Update equity chart
+  updateEquityChart(data.equity_curve);
+}
+
+function updateEquityChart(curve) {
+  const ctx = document.getElementById('equityChart').getContext('2d');
+  const labels = curve.map((p, i) => p.time || i);
+  const data = curve.map(p => p.equity);
+  
+  if (equityChart) {
+    equityChart.data.labels = labels;
+    equityChart.data.datasets[0].data = data;
+    equityChart.update('none');
+    return;
+  }
+  
+  equityChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Equity',
+        data: data,
+        borderColor: '#58a6ff',
+        backgroundColor: 'rgba(88,166,255,0.1)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: {
+          grid: { color: '#30363d' },
+          ticks: { color: '#8b949e', callback: v => '$' + v }
+        }
+      },
+      interaction: { intersect: false, mode: 'index' },
+    }
+  });
+}
+
+function renderRisk(data) {
+  const el = document.getElementById('risk-metrics');
+  if (!data) { el.innerHTML = '<div class="empty">No data</div>'; return; }
+  
+  const heatColor = data.heat_pct > 5 ? 'negative' : data.heat_pct > 3 ? 'warning' : 'positive';
+  let html = `
+    <div class="metric"><span class="metric-label">Portfolio Heat</span><span class="metric-value ${heatColor}">${formatPct(data.heat_pct)}</span></div>
+    <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(data.heat_pct/5*100, 100)}%;background:${data.heat_pct > 5 ? 'var(--red)' : data.heat_pct > 3 ? 'var(--orange)' : 'var(--green)'};"></div></div>
+    <div class="metric" style="margin-top:10px"><span class="metric-label">Total Risk</span><span class="metric-value">${formatCurrency(data.total_risk)}</span></div>
+    <div class="metric"><span class="metric-label">Cap</span><span class="metric-value">${formatPct(data.max_allowed_pct)}</span></div>
+  `;
+  
+  for (const [sym, info] of Object.entries(data.breakdown)) {
+    html += `<div class="metric"><span class="metric-label">${sym}</span><span class="metric-value">${info.volume.toFixed(2)} lots | ${formatCurrency(info.risk)} (${formatPct(info.risk_pct)})</span></div>`;
+  }
+  
+  // Regimes
+  if (Object.keys(data.regimes).length > 0) {
+    html += `<div style="margin-top:10px;font-size:0.8rem;color:var(--muted);">Regimes: ${JSON.stringify(data.regimes)}</div>`;
+  }
+  
+  el.innerHTML = html;
+}
+
+function renderPositions(data) {
+  const el = document.getElementById('positions-table');
+  if (!data || !data.positions || data.positions.length === 0) {
+    el.innerHTML = '<div class="empty">No open positions</div>';
+    return;
+  }
+  
+  let html = `<table class="positions-table">
+    <tr><th>Symbol</th><th>Type</th><th>Size</th><th>Entry</th><th>Current</th><th>SL</th><th>TP</th><th>P&L</th><th>Comment</th></tr>`;
+  
+  for (const p of data.positions) {
+    const pnlClass = p.profit >= 0 ? 'positive' : 'negative';
+    html += `<tr>
+      <td><strong>${p.symbol}</strong></td>
+      <td><span class="badge ${p.type === 'BUY' ? 'badge-long' : 'badge-short'}">${p.type}</span></td>
+      <td>${p.volume.toFixed(2)}</td>
+      <td>${p.price_open.toFixed(5)}</td>
+      <td>${p.price_current.toFixed(5)}</td>
+      <td>${p.sl > 0 ? p.sl.toFixed(5) : '-'}</td>
+      <td>${p.tp > 0 ? p.tp.toFixed(5) : '-'}</td>
+      <td class="${pnlClass}">${formatCurrency(p.profit)}</td>
+      <td style="color:var(--muted);font-size:0.75rem">${p.comment || '-'}</td>
+    </tr>`;
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+function renderHistory(data) {
+  const el = document.getElementById('trade-history');
+  if (!data || !data.trades || data.trades.length === 0) {
+    el.innerHTML = '<div class="empty">No trade history</div>';
+    return;
+  }
+  
+  let html = `<table class="positions-table">
+    <tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Size</th><th>SL</th><th>TP</th><th>P&L</th></tr>`;
+  
+  for (const t of data.trades.slice(-20).reverse()) {
+    const pnl = t.profit || 0;
+    const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+    html += `<tr>
+      <td><strong>${t.symbol}</strong></td>
+      <td><span class="badge ${t.side === 'LONG' ? 'badge-long' : 'badge-short'}">${t.side}</span></td>
+      <td>${t.entry_price ? t.entry_price.toFixed(5) : '-'}</td>
+      <td>${t.size ? t.size.toFixed(2) : '-'}</td>
+      <td>${t.sl ? t.sl.toFixed(5) : '-'}</td>
+      <td>${t.tp ? t.tp.toFixed(5) : '-'}</td>
+      <td class="${pnlClass}">${formatCurrency(pnl)}</td>
+    </tr>`;
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+function renderLogs(data) {
+  const el = document.getElementById('logs');
+  if (!data || !data.logs || data.logs.length === 0) {
+    el.innerHTML = '<div class="empty">No logs</div>';
+    return;
+  }
+  
+  let html = '';
+  for (const log of data.logs.slice(-100)) {
+    const cls = 'log-' + (log.level ? log.level.toLowerCase() : 'info');
+    html += `<div class="log-line ${cls}">${log.time ? `[${log.time}] ` : ''}${log.message}</div>`;
+  }
+  el.innerHTML = html;
+  el.scrollTop = el.scrollHeight;
+}
+
+async function refreshAll() {
+  const [account, stats, risk, positions, history, logs] = await Promise.all([
+    fetchData('/api/account'),
+    fetchData('/api/stats'),
+    fetchData('/api/risk'),
+    fetchData('/api/positions'),
+    fetchData('/api/history'),
+    fetchData('/api/logs'),
+  ]);
+  
+  renderAccount(account);
+  renderStats(stats);
+  renderRisk(risk);
+  renderPositions(positions);
+  renderHistory(history);
+  renderLogs(logs);
+}
+
+// Countdown timer
+setInterval(() => {
+  countdown--;
+  if (countdown <= 0) {
+    countdown = 30;
+    refreshAll();
+  }
+  document.getElementById('countdown').textContent = countdown;
+}, 1000);
+
+// Initial load
+refreshAll();
+</script>
+</body>
+</html>
