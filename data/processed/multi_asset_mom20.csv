@@ -1,7 +1,0 @@
-symbol,timeframe,sharpe,total_return_pct,ann_return_pct,max_dd_pct,num_trades,win_rate_pct,profit_factor
-XAUUSD,H4,1.815,57.13,33.0,-15.51,0,,
-XAUUSD,H1,1.128,91.54,24.76,-17.33,0,,
-EURUSD,H4,-0.082,-0.95,-0.7,-9.08,0,,
-NAS100,H4,-0.084,-2.81,-2.08,-27.52,0,,
-NAS100,H1,-0.2,-12.76,-5.2,-34.96,0,,
-EURUSD,H1,-1.42,-31.11,-13.6,-34.9,0,,

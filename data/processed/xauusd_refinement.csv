@@ -1,6 +1,0 @@
-variant,sharpe,total_return_pct,ann_return_pct,ann_vol_pct,max_dd_pct,num_trades,win_rate_pct,profit_factor
-Base Momentum,0.758,60.7,16.71,22.03,-21.29,2481,41.9,1.15
-+ Trend Filter,1.057,61.85,16.96,16.04,-16.07,1346,43.3,1.32
-+ Vol Filter,0.146,6.83,2.33,15.98,-15.08,1471,44.1,1.15
-+ Both Filters,0.992,37.46,11.21,11.29,-9.2,831,46.6,1.39
-+ Chandelier Stop,0.992,37.46,11.21,11.29,-9.2,831,46.6,1.39

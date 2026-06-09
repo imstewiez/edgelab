@@ -1,7 +1,0 @@
-scenario,description,sharpe,ann_return,max_dd,trades,win_rate
-none,No filter (baseline),1.978,31.52,-13.68,673,46.21
-nfp_only,Avoid NFP day +/- 24h,2.077,31.11,-15.52,650,48.0
-fomc_only,Avoid FOMC day +/- 24h,1.778,27.57,-13.68,664,46.54
-all_high,Avoid all high-impact +/- 24h,1.605,22.24,-14.74,637,47.25
-nfp_week,Avoid entire NFP week,2.023,27.79,-14.19,527,49.53
-fomc_week,Avoid entire FOMC week,1.724,25.48,-13.68,574,47.39
