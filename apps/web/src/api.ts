@@ -1,52 +1,30 @@
 const API = 'http://127.0.0.1:8765'
 
-export async function getHealth() {
-  const r = await fetch(`${API}/health`)
-  return r.json()
+async function req(path: string, init?: RequestInit) {
+  const r = await fetch(`${API}${path}`, init)
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`)
+  return data
 }
 
-export async function uploadFiles(files: FileList) {
-  const fd = new FormData()
-  Array.from(files).forEach(f => fd.append('files', f))
-  const r = await fetch(`${API}/api/upload`, { method: 'POST', body: fd })
-  return r.json()
-}
-
-export async function getCatalog() {
-  const r = await fetch(`${API}/api/catalog`)
-  return r.json()
-}
-
-export async function startJob(kind: 'import' | 'features') {
-  const r = await fetch(`${API}/api/jobs/${kind}`, { method: 'POST' })
-  return r.json()
-}
-
-export async function startScan(payload: any) {
-  const r = await fetch(`${API}/api/jobs/scan`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload)
-  })
-  return r.json()
-}
-
-export async function getJobs() {
-  const r = await fetch(`${API}/api/jobs`)
-  return r.json()
-}
-
-export async function getOutputs() {
-  const r = await fetch(`${API}/api/outputs`)
-  return r.json()
-}
-
-export async function getEdges(scan: string, kind = 'candidate') {
-  const r = await fetch(`${API}/api/outputs/${scan}/edges?kind=${kind}&limit=200`)
-  return r.json()
-}
-
-export async function getReport(scan: string) {
-  const r = await fetch(`${API}/api/outputs/${scan}/report`)
-  return r.json()
+export const api = {
+  health: () => req('/health'),
+  upload: async (files: FileList) => {
+    const fd = new FormData()
+    Array.from(files).forEach(f => fd.append('files', f))
+    return req('/api/upload', { method: 'POST', body: fd })
+  },
+  catalog: () => req('/api/catalog'),
+  jobs: () => req('/api/jobs'),
+  clearCompletedJobs: () => req('/api/jobs/completed', { method: 'DELETE' }),
+  startImport: () => req('/api/jobs/import', { method: 'POST' }),
+  startFeatures: () => req('/api/jobs/features', { method: 'POST' }),
+  discover: (payload: any = {}) => req('/api/jobs/discover', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
+  scan: (payload: any = {}) => req('/api/jobs/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
+  outputs: () => req('/api/outputs'),
+  edgeCards: () => req('/api/edge-cards'),
+  dataHealth: () => req('/api/data-health'),
+  edges: (scan: string, kind = 'candidate') => req(`/api/outputs/${scan}/edges?kind=${kind}&limit=300`),
+  report: (scan: string) => req(`/api/outputs/${scan}/report`),
+  cleanOutputs: () => req('/api/outputs', { method: 'DELETE' }),
 }

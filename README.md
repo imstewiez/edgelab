@@ -1,78 +1,34 @@
-# CoreEA EdgeLab
+# CoreEA EdgeLab v1
 
-Standalone local quant research dashboard for CoreEA.
+Standalone local-first algo/quant research lab for CoreEA.
 
-This project is intentionally separate from `imstewiez/gangsta-bot-web-44`.
+This repository is intentionally separate from `imstewiez/gangsta-bot-web-44`.
 
-## What this is
+## What v1 does
 
-EdgeLab is a local-first research platform:
+EdgeLab v1 is a unified research lab that can:
 
-- Web dashboard for uploads, datasets, scans and results
-- Local Python research engine
-- Local file-based cache, no paid database required
-- Market data stays on your PC
-- GitHub stores code only, not raw data
+- Upload MT5 CSV/ZIP market data
+- Validate data health
+- Build feature caches
+- Automatically discover strategy candidates
+- Rank candidate edges with anti-overfit checks
+- Separate accepted/rejected edges with readable reasons
+- Show simple dashboard cards instead of raw confusing tables
+- Prevent duplicate spam jobs and multiple-click job floods
+- Keep all market data local and private
+- Run without paid databases
 
-## Architecture
+## Important
 
-```text
-coreea-edgelab/
-  apps/web/       React dashboard
-  apps/engine/    FastAPI local quant engine
-  data/           local market data, ignored by Git
-  docs/           architecture + data requirements
-```
+This is a production-candidate research environment, not a live-trading guarantee. Any edge must still pass walk-forward, slippage/spread stress, Monte Carlo and portfolio tests before becoming an EA module.
 
-## Local storage
-
-The engine stores data here:
-
-```text
-data/
-  raw/
-  cache/
-  features/
-  outputs/
-```
-
-These folders are ignored by Git.
-
-## Install
-
-### Engine
+## Quick start
 
 ```powershell
-cd apps/engine
-py -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### Web
-
-```powershell
-cd apps/web
-npm install
-```
-
-## Run
-
-Open two terminals.
-
-### Terminal 1 — Engine
-
-```powershell
-cd apps/engine
-.venv\Scripts\activate
-uvicorn main:app --host 127.0.0.1 --port 8765 --reload
-```
-
-### Terminal 2 — Web
-
-```powershell
-cd apps/web
-npm run dev
+INSTALL_ALL.bat
+START_ENGINE.bat
+START_WEB.bat
 ```
 
 Open:
@@ -83,38 +39,11 @@ http://localhost:5173
 
 ## Workflow
 
-1. Upload raw MT5 CSV/ZIP files in the dashboard.
-2. Run "Import Data".
-3. Run "Build Features".
-4. Run "Scan HTF" or "Scan Intraday".
-5. Review candidate edges and reports.
-6. Export strategy specs for EA development.
+1. Upload market data.
+2. Run **Discover Edges**.
+3. Review **Candidate Edges** and **Rejected Ideas**.
+4. Use Risk Lab before EA export.
 
-## Current research concepts
+## Local data
 
-- H4/D1 breakout trend
-- fast breakout
-- EMA21 pullback/reclaim
-- compression breakout
-- sweep/reclaim
-- previous-day sweep
-- Asian breakout
-- NY opening range breakout
-
-## DOM / Order Book
-
-Historical DOM usually cannot be reconstructed from candles. For MT5/CFD/FX, DOM is broker-specific. EdgeLab supports the structure for DOM imports later, but we need a live recorder to collect it going forward.
-
-See `docs/DATA_REQUIREMENTS.md`.
-
-## Important
-
-Do not put market data into GitHub.
-
-The `.gitignore` blocks:
-
-- raw market data
-- cached features
-- DuckDB/parquet/pickle files
-- reports/outputs
-- zip/csv data files
+Everything under `data/` is ignored by Git. Do not commit market data, CSVs, ZIPs, reports, cache files or strategy outputs.

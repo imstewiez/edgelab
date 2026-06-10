@@ -1,207 +1,135 @@
 from __future__ import annotations
 
-import json
-import shutil
-import threading
-import time
-import uuid
-import zipfile
-from pathlib import Path
+import shutil, threading, time, uuid, zipfile
 from typing import Any, Dict, List, Optional
-
-import pandas as pd
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
-
 from quantlab_core import (
-    STORE,
-    RAW_DIR,
-    OUTPUTS_DIR,
-    ensure_store,
-    import_raw_data,
-    build_features,
-    run_scan,
-    list_catalog,
-    list_feature_catalog,
-    list_outputs,
-    read_edges_preview,
+    STORE, RAW_DIR, OUTPUTS_DIR, ensure_store, import_raw_data, build_features,
+    run_auto_discovery, run_scan_only, list_catalog, list_feature_catalog,
+    list_outputs, read_edges_preview, read_report, read_edge_cards, read_data_health, clean_outputs
 )
 
-app = FastAPI(title="CoreEA EdgeLab Engine", version="0.0.1")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title='CoreEA EdgeLab v1 Engine', version='1.0.0-production-candidate')
+app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173','http://127.0.0.1:5173'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
 
 jobs: Dict[str, Dict[str, Any]] = {}
+job_locks: Dict[str, str] = {}
 jobs_lock = threading.Lock()
 
+def now(): return time.strftime('%Y-%m-%d %H:%M:%S')
 
-def create_job(kind: str, payload: Optional[dict] = None) -> str:
-    job_id = str(uuid.uuid4())[:8]
+def create_or_reuse_job(kind: str, lock_key: str, payload: Optional[dict] = None):
     with jobs_lock:
-        jobs[job_id] = {
-            "id": job_id,
-            "kind": kind,
-            "status": "queued",
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "payload": payload or {},
-            "logs": [],
-            "result": None,
-            "error": None,
-        }
-    return job_id
+        existing = job_locks.get(lock_key)
+        if existing and existing in jobs and jobs[existing]['status'] in {'queued','running'}:
+            jobs[existing]['logs'].append(f"[{time.strftime('%H:%M:%S')}] Duplicate click ignored. Existing job is already running.")
+            return existing, True
+        jid = str(uuid.uuid4())[:8]
+        jobs[jid] = {'id': jid, 'kind': kind, 'lock_key': lock_key, 'status': 'queued', 'created_at': now(), 'updated_at': now(), 'payload': payload or {}, 'logs': [], 'result': None, 'error': None, 'reused': False}
+        job_locks[lock_key] = jid
+        return jid, False
 
-
-def log_job(job_id: str, message: str):
+def log_job(jid: str, msg: str):
     with jobs_lock:
-        if job_id in jobs:
-            jobs[job_id]["logs"].append(f"[{time.strftime('%H:%M:%S')}] {message}")
-            jobs[job_id]["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if jid in jobs:
+            jobs[jid]['logs'].append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+            jobs[jid]['updated_at'] = now()
 
-
-def update_job(job_id: str, **kwargs):
+def update_job(jid: str, **kw):
     with jobs_lock:
-        if job_id in jobs:
-            jobs[job_id].update(kwargs)
-            jobs[job_id]["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if jid in jobs:
+            jobs[jid].update(kw); jobs[jid]['updated_at'] = now()
 
-
-def run_job(job_id: str, fn, *args, **kwargs):
-    update_job(job_id, status="running")
+def run_job(jid: str, fn, *args, **kwargs):
+    update_job(jid, status='running')
+    lock_key = jobs.get(jid, {}).get('lock_key')
     try:
-        result = fn(*args, logger=lambda m: log_job(job_id, m), **kwargs)
-        update_job(job_id, status="completed", result=result)
+        res = fn(*args, logger=lambda m: log_job(jid, m), **kwargs)
+        update_job(jid, status='completed', result=res)
     except Exception as e:
-        update_job(job_id, status="failed", error=str(e))
-        log_job(job_id, f"ERROR: {e}")
+        update_job(jid, status='failed', error=str(e)); log_job(jid, f'ERROR: {e}')
+    finally:
+        with jobs_lock:
+            if lock_key and job_locks.get(lock_key) == jid: job_locks.pop(lock_key, None)
 
+def start_locked(kind: str, lock_key: str, fn, payload: Optional[dict] = None, *args, **kwargs):
+    jid, reused = create_or_reuse_job(kind, lock_key, payload)
+    if reused: return {'job_id': jid, 'reused': True, 'message': 'Job already running. Duplicate click ignored.'}
+    threading.Thread(target=run_job, args=(jid, fn, *args), kwargs=kwargs, daemon=True).start()
+    return {'job_id': jid, 'reused': False, 'message': f'{kind} job started.'}
 
-@app.on_event("startup")
-def startup():
-    ensure_store()
+@app.on_event('startup')
+def startup(): ensure_store()
 
-
-@app.get("/health")
+@app.get('/health')
 def health():
-    return {
-        "ok": True,
-        "store": str(STORE.resolve()),
-        "raw_dir": str(RAW_DIR.resolve()),
-        "outputs_dir": str(OUTPUTS_DIR.resolve()),
-    }
-
-
-@app.post("/api/upload")
-async def upload(files: List[UploadFile] = File(...)):
     ensure_store()
-    saved = []
+    return {'ok': True, 'version': '1.0.0-production-candidate', 'store': str(STORE.resolve()), 'active_locks': job_locks}
+
+@app.post('/api/upload')
+async def upload(files: List[UploadFile] = File(...)):
+    ensure_store(); saved = []
     for f in files:
         dest = RAW_DIR / f.filename
-        with dest.open("wb") as out:
-            shutil.copyfileobj(f.file, out)
-        saved.append({"filename": f.filename, "path": str(dest), "size": dest.stat().st_size})
+        with dest.open('wb') as out: shutil.copyfileobj(f.file, out)
+        item = {'filename': f.filename, 'path': str(dest), 'size': dest.stat().st_size}
+        if dest.suffix.lower() == '.zip':
+            ex = RAW_DIR / dest.stem; ex.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(dest, 'r') as z: z.extractall(ex)
+            item['extracted_to'] = str(ex)
+        saved.append(item)
+    return {'saved': saved}
 
-        if dest.suffix.lower() == ".zip":
-            extract_dir = RAW_DIR / dest.stem
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(dest, "r") as z:
-                z.extractall(extract_dir)
-            saved[-1]["extracted_to"] = str(extract_dir)
-
-    return {"saved": saved}
-
-
-@app.get("/api/catalog")
+@app.get('/api/catalog')
 def catalog():
-    return {
-        "raw_files": [str(p.relative_to(RAW_DIR)) for p in RAW_DIR.rglob("*") if p.is_file()],
-        "datasets": list_catalog(),
-        "features": list_feature_catalog(),
-    }
+    ensure_store()
+    return {'raw_files': [str(p.relative_to(RAW_DIR)) for p in RAW_DIR.rglob('*') if p.is_file()], 'datasets': list_catalog(), 'features': list_feature_catalog(), 'data_health': read_data_health()}
 
+@app.post('/api/jobs/import')
+def job_import(): return start_locked('import', 'import', import_raw_data)
 
-@app.post("/api/jobs/import")
-def job_import():
-    job_id = create_job("import")
-    threading.Thread(target=run_job, args=(job_id, import_raw_data), daemon=True).start()
-    return {"job_id": job_id}
+@app.post('/api/jobs/features')
+def job_features(): return start_locked('features', 'features', build_features)
 
+@app.post('/api/jobs/discover')
+def job_discover(payload: Dict[str, Any] | None = None):
+    payload = payload or {}; mode = payload.get('mode', 'auto'); symbols = payload.get('symbols', ''); tfs = payload.get('tfs', '')
+    return start_locked('auto_discovery', f'discover:{mode}:{symbols}:{tfs}', run_auto_discovery, payload, mode=mode, symbols=symbols, tfs=tfs)
 
-@app.post("/api/jobs/features")
-def job_features():
-    job_id = create_job("features")
-    threading.Thread(target=run_job, args=(job_id, build_features), daemon=True).start()
-    return {"job_id": job_id}
-
-
-@app.post("/api/jobs/scan")
+@app.post('/api/jobs/scan')
 def job_scan(payload: Dict[str, Any]):
-    name = payload.get("name") or f"scan_{time.strftime('%Y%m%d_%H%M%S')}"
-    mode = payload.get("mode", "priority")
-    symbols = payload.get("symbols") or ""
-    tfs = payload.get("tfs") or ""
-    min_trades = int(payload.get("min_trades", 40))
-    min_pf = float(payload.get("min_pf", 1.22))
-    min_test_pf = float(payload.get("min_test_pf", 1.08))
+    mode = payload.get('mode','priority'); name = payload.get('name') or f"scan_{mode}_{time.strftime('%Y%m%d_%H%M%S')}"
+    return start_locked('scan', f'scan:{mode}', run_scan_only, payload, name=name, mode=mode, symbols=payload.get('symbols',''), tfs=payload.get('tfs',''))
 
-    job_id = create_job("scan", payload)
-    threading.Thread(
-        target=run_job,
-        args=(job_id, run_scan),
-        kwargs={
-            "name": name,
-            "mode": mode,
-            "symbols": symbols,
-            "tfs": tfs,
-            "min_trades": min_trades,
-            "min_pf": min_pf,
-            "min_test_pf": min_test_pf,
-        },
-        daemon=True,
-    ).start()
-    return {"job_id": job_id}
-
-
-@app.get("/api/jobs")
+@app.get('/api/jobs')
 def get_jobs():
+    with jobs_lock: return sorted(jobs.values(), key=lambda x: x['created_at'], reverse=True)
+
+@app.delete('/api/jobs/completed')
+def clear_completed_jobs():
     with jobs_lock:
-        return list(jobs.values())
+        keep = {k:v for k,v in jobs.items() if v['status'] in {'queued','running'}}; removed = len(jobs)-len(keep); jobs.clear(); jobs.update(keep)
+    return {'removed': removed, 'remaining': len(jobs)}
 
-
-@app.get("/api/jobs/{job_id}")
-def get_job(job_id: str):
-    with jobs_lock:
-        return jobs.get(job_id) or JSONResponse(status_code=404, content={"error": "job not found"})
-
-
-@app.get("/api/outputs")
-def outputs():
-    return list_outputs()
-
-
-@app.get("/api/outputs/{scan_name}/edges")
-def output_edges(scan_name: str, kind: str = "candidate", limit: int = 100):
-    return read_edges_preview(scan_name, kind=kind, limit=limit)
-
-
-@app.get("/api/outputs/{scan_name}/report")
+@app.get('/api/outputs')
+def outputs(): return list_outputs()
+@app.get('/api/edge-cards')
+def edge_cards(): return read_edge_cards()
+@app.get('/api/data-health')
+def data_health(): return read_data_health()
+@app.get('/api/outputs/{scan_name}/edges')
+def output_edges(scan_name: str, kind: str='candidate', limit: int=100): return read_edges_preview(scan_name, kind, limit)
+@app.get('/api/outputs/{scan_name}/report')
 def output_report(scan_name: str):
-    p = OUTPUTS_DIR / scan_name / "QUANTLAB_REPORT.md"
-    if not p.exists():
-        return JSONResponse(status_code=404, content={"error": "report not found"})
-    return {"scan_name": scan_name, "markdown": p.read_text(encoding="utf-8", errors="ignore")}
-
-
-@app.get("/api/download/{scan_name}/{filename}")
+    md = read_report(scan_name)
+    if md is None: return JSONResponse(status_code=404, content={'error':'report not found'})
+    return {'scan_name': scan_name, 'markdown': md}
+@app.delete('/api/outputs')
+def api_clean_outputs(): return clean_outputs()
+@app.get('/api/download/{scan_name}/{filename}')
 def download(scan_name: str, filename: str):
     p = OUTPUTS_DIR / scan_name / filename
-    if not p.exists():
-        return JSONResponse(status_code=404, content={"error": "file not found"})
+    if not p.exists(): return JSONResponse(status_code=404, content={'error':'file not found'})
     return FileResponse(str(p), filename=filename)
