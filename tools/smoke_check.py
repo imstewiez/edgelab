@@ -3,9 +3,7 @@ from __future__ import annotations
 import ast
 import compileall
 import json
-import os
 import re
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +14,10 @@ STREAMLIT = ROOT / "apps" / "streamlit"
 LEGACY_PATTERNS = [
     "TODO", "FIXME", "HACK", "deprecated", "legacy", "old pipeline", "quick automated checks",
 ]
+IGNORE_DIR_NAMES = {
+    ".git", ".venv", "venv", "env", "node_modules", "site-packages", "__pycache__",
+    ".pytest_cache", ".streamlit", "dist", "build", ".next",
+}
 REQUIRED_ENGINE = [
     "main.py", "quantlab_core.py", "discovery_fast.py", "pipeline_io.py", "stage_limits.py",
     "robustness.py", "walkforward.py", "execution_stress.py", "monte_carlo.py", "sensitivity.py",
@@ -28,6 +30,19 @@ OPTIONAL_BUT_EXPECTED = [WEB / "src" / "App.tsx", WEB / "src" / "api.ts", STREAM
 def add(report: dict, name: str, ok: bool, **extra):
     report["checks"].append({"name": name, "ok": bool(ok), **extra})
     return bool(ok)
+
+
+def should_ignore(path: Path) -> bool:
+    return any(part in IGNORE_DIR_NAMES for part in path.parts)
+
+
+def iter_project_py(base: Path):
+    if not base.exists():
+        return
+    for p in base.rglob("*.py"):
+        if should_ignore(p.relative_to(ROOT)):
+            continue
+        yield p
 
 
 def py_imports(path: Path) -> set[str]:
@@ -52,6 +67,8 @@ def scan_legacy() -> list[dict]:
         if not base.exists():
             continue
         for p in base.rglob("*"):
+            if should_ignore(p.relative_to(ROOT)):
+                continue
             if not p.is_file() or p.suffix.lower() not in {".py", ".tsx", ".ts", ".css"}:
                 continue
             text = p.read_text(encoding="utf-8", errors="ignore")
@@ -65,13 +82,13 @@ def main() -> int:
     report = {"root": str(ROOT), "checks": []}
     ok = True
 
-    engine_ok = compileall.compile_dir(str(ENGINE), quiet=1, force=True)
+    engine_ok = compileall.compile_dir(str(ENGINE), quiet=1, force=True, rx=re.compile(r"(\\.venv|site-packages|__pycache__)"))
     ok = add(report, "python_compile_engine", engine_ok, path=str(ENGINE)) and ok
 
-    tools_ok = compileall.compile_dir(str(ROOT / "tools"), quiet=1, force=True)
+    tools_ok = compileall.compile_dir(str(ROOT / "tools"), quiet=1, force=True, rx=re.compile(r"(__pycache__|\\.venv|site-packages)"))
     ok = add(report, "python_compile_tools", tools_ok, path=str(ROOT / "tools")) and ok
 
-    streamlit_ok = compileall.compile_dir(str(STREAMLIT), quiet=1, force=True) if STREAMLIT.exists() else False
+    streamlit_ok = compileall.compile_dir(str(STREAMLIT), quiet=1, force=True, rx=re.compile(r"(__pycache__|\\.venv|site-packages)")) if STREAMLIT.exists() else False
     ok = add(report, "python_compile_streamlit", streamlit_ok, path=str(STREAMLIT)) and ok
 
     missing_engine = [f for f in REQUIRED_ENGINE if not (ENGINE / f).exists()]
@@ -91,9 +108,7 @@ def main() -> int:
 
     imported = set()
     for base in [ENGINE, STREAMLIT, ROOT / "tools"]:
-        if not base.exists():
-            continue
-        for p in base.rglob("*.py"):
+        for p in iter_project_py(base) or []:
             imported |= py_imports(p)
     third_party = {"fastapi", "pandas", "numpy", "streamlit", "plotly", "pytest"}
     imported_third_party = sorted(imported & third_party)
@@ -107,7 +122,7 @@ def main() -> int:
 
     legacy_hits = scan_legacy()
     non_fatal_hits = [h for h in legacy_hits if h["pattern"].lower() not in {"quick automated checks"}]
-    ok = add(report, "legacy_markers_scan", not non_fatal_hits, hits=non_fatal_hits[:50], note="quick automated checks is tolerated only for old-run detection in UI.") and ok
+    ok = add(report, "legacy_markers_scan", not non_fatal_hits, hits=non_fatal_hits[:50], note="Vendor folders are ignored. quick automated checks is tolerated only for old-run detection in UI.") and ok
 
     data_dir_exists = (ROOT / "data").exists()
     add(report, "data_dir_present", data_dir_exists, note="Runtime data may be local-only and not committed.")
