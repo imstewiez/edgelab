@@ -10,6 +10,7 @@ from quantlab_core import (
     run_auto_discovery, run_scan_only, list_catalog, list_feature_catalog,
     list_outputs, read_edges_preview, read_report, read_edge_cards, read_data_health, clean_outputs
 )
+from robustness import read_validation, run_validation
 from strategy_universe import get_strategy_universe
 
 app = FastAPI(title='CoreEA EdgeLab v1 Engine', version='1.0.0-production-candidate')
@@ -107,6 +108,11 @@ def job_scan(payload: Dict[str, Any]):
     mode = payload.get('mode','priority'); name = payload.get('name') or f"scan_{mode}_{time.strftime('%Y%m%d_%H%M%S')}"
     return start_locked('scan', f'scan:{mode}', run_scan_only, payload, name=name, mode=mode, symbols=payload.get('symbols',''), tfs=payload.get('tfs',''))
 
+@app.post('/api/jobs/validate')
+def job_validate(payload: Dict[str, Any] | None = None):
+    payload = payload or {}; scan_name = payload.get('scan_name') or None
+    return start_locked('stage2_validation', f'validate:{scan_name or "latest"}', run_validation, payload, scan_name=scan_name)
+
 @app.get('/api/jobs')
 def get_jobs():
     with jobs_lock: return sorted(jobs.values(), key=lambda x: x['created_at'], reverse=True)
@@ -123,6 +129,8 @@ def outputs(): return list_outputs()
 def edge_cards(): return read_edge_cards()
 @app.get('/api/data-health')
 def data_health(): return read_data_health()
+@app.get('/api/validation')
+def validation(scan_name: str | None = None): return read_validation(scan_name)
 @app.get('/api/outputs/{scan_name}/edges')
 def output_edges(scan_name: str, kind: str='candidate', limit: int=100): return read_edges_preview(scan_name, kind, limit)
 @app.get('/api/outputs/{scan_name}/report')
