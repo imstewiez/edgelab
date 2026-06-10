@@ -8,6 +8,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from pipeline_io import EDGE_COLUMNS, MC_COLUMNS, PORTFOLIO_COLUMNS, SENSITIVITY_COLUMNS, STRESS_COLUMNS, VALIDATION_COLUMNS, WF_COLUMNS, safe_read_csv, safe_to_csv
 from quantlab_core import OUTPUTS_DIR, HORIZON, backtest, feature_path, filter_by_setup_keys, row_setup_id, session_mask, signals
 
 PORTFOLIO_PATH = OUTPUTS_DIR / "latest_portfolio_risk.json"
@@ -30,21 +31,22 @@ def _num(v, default=0.0):
 
 
 def _candidate_source(run_dir: Path) -> pd.DataFrame:
-    cand = run_dir / "candidate_edges.csv"
-    if not cand.exists():
-        raise RuntimeError("No candidate_edges.csv found. Run Discover first.")
-    df = pd.read_csv(cand).replace([np.inf, -np.inf], np.nan).fillna("")
-    for file_name, status_col, allowed in [
-        ("stage6_sensitivity.csv", "sensitivity_status", {"sensitivity_pass", "sensitivity_watchlist"}),
-        ("stage5_monte_carlo.csv", "mc_status", {"mc_pass", "mc_watchlist"}),
-        ("stage4_execution_stress.csv", "stress_status", {"stress_pass", "stress_watchlist"}),
-        ("stage3_walkforward.csv", "wf_status", {"wf_pass", "wf_watchlist"}),
-        ("stage2_validation.csv", "robustness_status", {"robust_candidate", "watchlist"}),
+    df = safe_read_csv(run_dir / "candidate_edges.csv", EDGE_COLUMNS)
+    if df.empty:
+        return df
+    for file_name, status_col, allowed, cols in [
+        ("stage6_sensitivity.csv", "sensitivity_status", {"sensitivity_pass", "sensitivity_watchlist"}, SENSITIVITY_COLUMNS),
+        ("stage5_monte_carlo.csv", "mc_status", {"mc_pass", "mc_watchlist"}, MC_COLUMNS),
+        ("stage4_execution_stress.csv", "stress_status", {"stress_pass", "stress_watchlist"}, STRESS_COLUMNS),
+        ("stage3_walkforward.csv", "wf_status", {"wf_pass", "wf_watchlist"}, WF_COLUMNS),
+        ("stage2_validation.csv", "robustness_status", {"robust_candidate", "watchlist"}, VALIDATION_COLUMNS),
     ]:
         p = run_dir / file_name
         if not p.exists():
             continue
-        f = pd.read_csv(p).replace([np.inf, -np.inf], np.nan).fillna("")
+        f = safe_read_csv(p, cols)
+        if f.empty:
+            continue
         if status_col in f.columns:
             f = f[f[status_col].isin(allowed)]
         filtered = filter_by_setup_keys(df, f)
@@ -54,13 +56,8 @@ def _candidate_source(run_dir: Path) -> pd.DataFrame:
 
 
 def _monthly_returns(row: dict):
-    symbol = str(row.get("symbol"))
-    tf = str(row.get("tf"))
-    concept = str(row.get("concept"))
-    lookback = int(_num(row.get("lookback"), 20))
-    session = str(row.get("session", "all"))
-    rr = _num(row.get("rr"), 1.0)
-    sl_mult = _num(row.get("sl_mult"), 1.0)
+    symbol = str(row.get("symbol")); tf = str(row.get("tf")); concept = str(row.get("concept"))
+    lookback = int(_num(row.get("lookback"), 20)); session = str(row.get("session", "all")); rr = _num(row.get("rr"), 1.0); sl_mult = _num(row.get("sl_mult"), 1.0)
     setup_id = row.get("setup_id") or row_setup_id(row)
     fp = feature_path(symbol, tf)
     if not fp.exists():
@@ -82,6 +79,15 @@ def _max_dd(series: pd.Series) -> float:
     return round(float((eq.cummax() - eq).max()), 3) if len(eq) else 0.0
 
 
+def _empty_summary(run_dir: Path, reason: str):
+    safe_to_csv([], run_dir / "stage7_portfolio_risk.csv", PORTFOLIO_COLUMNS)
+    pd.DataFrame().to_csv(run_dir / "stage7_strategy_correlation.csv")
+    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": 0, "portfolio_pass": 0, "portfolio_watchlist": 0, "portfolio_fail": 0, "portfolio_monthly_sumR": 0, "portfolio_monthly_dd_R": 0, "avg_pair_corr": 0, "high_corr_pairs": [], "ea_ready": 0, "stage": "Stage 7 portfolio/risk heat", "top": [], "warning": reason}
+    (run_dir / "PORTFOLIO_RISK_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    PORTFOLIO_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
 def run_portfolio_risk(scan_name: str | None = None, logger: Callable[[str], None] = print):
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     run_dir = OUTPUTS_DIR / scan_name if scan_name else _latest_output_dir()
@@ -89,19 +95,15 @@ def run_portfolio_risk(scan_name: str | None = None, logger: Callable[[str], Non
         raise RuntimeError("No discovery run found. Run Discover first.")
     candidates = _candidate_source(run_dir)
     logger(f"Portfolio/risk testing {len(candidates)} candidates from {run_dir.name}")
-    series = {}
-    metas = []
+    series = {}; metas = []
     for i, row in enumerate(candidates.to_dict("records"), 1):
         logger(f"[{i}/{len(candidates)}] Portfolio {row.get('symbol','')} {row.get('tf','')} {row.get('concept','')}")
         key, ser, meta = _monthly_returns(row)
         if key is None:
             continue
-        series[key] = ser
-        metas.append(meta)
+        series[key] = ser; metas.append(meta)
     if not series:
-        summary = {"scan_name": run_dir.name, "candidates_checked": 0, "portfolio_pass": 0, "ea_ready": 0, "top": [], "warning": "No valid strategy return streams for portfolio analysis."}
-        PORTFOLIO_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        return summary
+        return _empty_summary(run_dir, "No valid strategy return streams for portfolio analysis.")
     mat = pd.DataFrame(series).fillna(0).sort_index()
     corr = mat.corr().fillna(0)
     combined = mat.sum(axis=1) / max(1, mat.shape[1])
@@ -117,8 +119,7 @@ def run_portfolio_risk(scan_name: str | None = None, logger: Callable[[str], Non
         key = meta["id"]
         avg_corr = float(corr[key].drop(index=key, errors="ignore").abs().mean()) if len(cols) > 1 else 0.0
         contribution_dd = _max_dd(mat[key])
-        score = 100
-        reasons = []
+        score = 100; reasons = []
         if avg_corr > 0.60:
             score -= 35; reasons.append("high average correlation")
         elif avg_corr > 0.40:
@@ -131,10 +132,11 @@ def run_portfolio_risk(scan_name: str | None = None, logger: Callable[[str], Non
             score -= 25; reasons.append("non-positive total R")
         status = "portfolio_pass" if score >= 75 else ("portfolio_watchlist" if score >= 55 else "portfolio_fail")
         rows.append({**meta, "avg_abs_corr": round(avg_corr, 3), "standalone_monthly_dd_R": contribution_dd, "portfolio_score": int(score), "portfolio_status": status, "verdict": "; ".join(reasons) if reasons else "Adds acceptable diversified risk"})
-    out = pd.DataFrame(rows).sort_values("portfolio_score", ascending=False)
-    out.to_csv(run_dir / "stage7_portfolio_risk.csv", index=False)
+    out = pd.DataFrame(rows).sort_values("portfolio_score", ascending=False) if rows else pd.DataFrame(columns=PORTFOLIO_COLUMNS)
+    out = safe_to_csv(out, run_dir / "stage7_portfolio_risk.csv", PORTFOLIO_COLUMNS)
     corr.to_csv(run_dir / "stage7_strategy_correlation.csv")
-    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(out)), "portfolio_pass": int((out.portfolio_status == "portfolio_pass").sum()), "portfolio_watchlist": int((out.portfolio_status == "portfolio_watchlist").sum()), "portfolio_fail": int((out.portfolio_status == "portfolio_fail").sum()), "portfolio_monthly_sumR": round(float(combined.sum()), 3), "portfolio_monthly_dd_R": _max_dd(combined), "avg_pair_corr": round(float(corr.where(~np.eye(len(corr), dtype=bool)).stack().abs().mean()), 3) if len(corr) > 1 else 0, "high_corr_pairs": high_corr_pairs[:30], "ea_ready": 0, "stage": "Stage 7 portfolio/risk heat", "warning": "Portfolio risk uses exact setup_id monthly R streams as a first approximation. Final live sizing needs trade-time overlap, broker margin and forward tracking.", "top": out.head(25).to_dict("records")}
+    avg_pair_corr = round(float(corr.where(~np.eye(len(corr), dtype=bool)).stack().abs().mean()), 3) if len(corr) > 1 else 0
+    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(out)), "portfolio_pass": int((out.portfolio_status == "portfolio_pass").sum()) if not out.empty else 0, "portfolio_watchlist": int((out.portfolio_status == "portfolio_watchlist").sum()) if not out.empty else 0, "portfolio_fail": int((out.portfolio_status == "portfolio_fail").sum()) if not out.empty else 0, "portfolio_monthly_sumR": round(float(combined.sum()), 3), "portfolio_monthly_dd_R": _max_dd(combined), "avg_pair_corr": avg_pair_corr, "high_corr_pairs": high_corr_pairs[:30], "ea_ready": 0, "stage": "Stage 7 portfolio/risk heat", "warning": "Portfolio risk uses exact setup_id monthly R streams as a first approximation. Final live sizing needs trade-time overlap, broker margin and forward tracking.", "top": out.head(25).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not out.empty else []}
     (run_dir / "PORTFOLIO_RISK_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     PORTFOLIO_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
