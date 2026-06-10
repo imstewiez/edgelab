@@ -12,6 +12,7 @@ from quantlab_core import (
 )
 from robustness import read_validation, run_validation
 from strategy_universe import get_strategy_universe
+from walkforward import read_walkforward, run_walkforward
 
 app = FastAPI(title='CoreEA EdgeLab v1 Engine', version='1.0.0-production-candidate')
 app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173','http://127.0.0.1:5173'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
@@ -94,29 +95,28 @@ def catalog():
 
 @app.post('/api/jobs/import')
 def job_import(): return start_locked('import', 'import', import_raw_data)
-
 @app.post('/api/jobs/features')
 def job_features(): return start_locked('features', 'features', build_features)
-
 @app.post('/api/jobs/discover')
 def job_discover(payload: Dict[str, Any] | None = None):
     payload = payload or {}; mode = payload.get('mode', 'auto'); symbols = payload.get('symbols', ''); tfs = payload.get('tfs', '')
     return start_locked('auto_discovery', f'discover:{mode}:{symbols}:{tfs}', run_auto_discovery, payload, mode=mode, symbols=symbols, tfs=tfs)
-
 @app.post('/api/jobs/scan')
 def job_scan(payload: Dict[str, Any]):
     mode = payload.get('mode','priority'); name = payload.get('name') or f"scan_{mode}_{time.strftime('%Y%m%d_%H%M%S')}"
     return start_locked('scan', f'scan:{mode}', run_scan_only, payload, name=name, mode=mode, symbols=payload.get('symbols',''), tfs=payload.get('tfs',''))
-
 @app.post('/api/jobs/validate')
 def job_validate(payload: Dict[str, Any] | None = None):
     payload = payload or {}; scan_name = payload.get('scan_name') or None
     return start_locked('stage2_validation', f'validate:{scan_name or "latest"}', run_validation, payload, scan_name=scan_name)
+@app.post('/api/jobs/walkforward')
+def job_walkforward(payload: Dict[str, Any] | None = None):
+    payload = payload or {}; scan_name = payload.get('scan_name') or None
+    return start_locked('stage3_walkforward', f'walkforward:{scan_name or "latest"}', run_walkforward, payload, scan_name=scan_name)
 
 @app.get('/api/jobs')
 def get_jobs():
     with jobs_lock: return sorted(jobs.values(), key=lambda x: x['created_at'], reverse=True)
-
 @app.delete('/api/jobs/completed')
 def clear_completed_jobs():
     with jobs_lock:
@@ -131,6 +131,8 @@ def edge_cards(): return read_edge_cards()
 def data_health(): return read_data_health()
 @app.get('/api/validation')
 def validation(scan_name: str | None = None): return read_validation(scan_name)
+@app.get('/api/walkforward')
+def walkforward(scan_name: str | None = None): return read_walkforward(scan_name)
 @app.get('/api/outputs/{scan_name}/edges')
 def output_edges(scan_name: str, kind: str='candidate', limit: int=100): return read_edges_preview(scan_name, kind, limit)
 @app.get('/api/outputs/{scan_name}/report')
