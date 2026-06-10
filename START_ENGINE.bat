@@ -1,6 +1,7 @@
 @echo off
+setlocal
 title CoreEA EdgeLab Engine
-cd apps\engine
+cd /d "%~dp0apps\engine"
 if not exist .venv (
   py -m venv .venv
 )
