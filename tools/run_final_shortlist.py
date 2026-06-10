@@ -32,7 +32,7 @@ STATUS_PASS = {
 
 BASE_COLS = ["setup_id", "symbol", "tf", "concept", "session", "lookback", "rr", "sl_mult"]
 DISPLAY_COLS = BASE_COLS + [
-    "final_rank_score", "gates_passed", "real_sumR", "sumR_percentile", "permutation_score",
+    "final_rank_score", "gates_passed", "strict_pass", "real_sumR", "sumR_percentile", "permutation_score",
     "pf", "test_pf", "expR", "maxDD_R", "n", "profit_probability", "p95_dd_R",
     "wf_score", "wf_pass_rate", "stress_pass_rate", "portfolio_score", "avg_abs_corr",
     "verdict", "paper_reason",
@@ -92,23 +92,42 @@ def rank(df: pd.DataFrame) -> pd.DataFrame:
     out["_dd"] = numeric(out.get("maxDD_R", pd.Series(99, index=out.index)), default=99)
     out["_mc_profit"] = numeric(out.get("profit_probability", pd.Series(0, index=out.index))) * 100
     out["_wf"] = numeric(out.get("wf_score", pd.Series(0, index=out.index)))
+    out["_wf_pass_rate"] = numeric(out.get("wf_pass_rate", pd.Series(0, index=out.index)))
+    out["_stress_pass_rate"] = numeric(out.get("stress_pass_rate", pd.Series(0, index=out.index)))
     out["_portfolio"] = numeric(out.get("portfolio_score", pd.Series(0, index=out.index)))
+    out["_corr"] = numeric(out.get("avg_abs_corr", pd.Series(1.0, index=out.index)), default=1.0)
+    out["strict_pass"] = (
+        (out["gates_passed"] >= 6)
+        & (out["_wf_pass_rate"] >= 0.5)
+        & (out["_stress_pass_rate"] >= 0.7)
+        & (out["_perm"] >= 95)
+        & (out["_pf"] >= 1.45)
+        & (out["_dd"] <= 12)
+    )
     out["final_rank_score"] = (
         out["gates_passed"] * 18
-        + out["_perm"] * 0.55
-        + out["_perm_score"] * 0.35
+        + out["strict_pass"].astype(int) * 45
+        + out["_perm"] * 0.50
+        + out["_perm_score"] * 0.30
         + out["_mc_profit"] * 0.12
         + out["_wf"] * 0.18
-        + out["_portfolio"] * 0.18
-        + out["_sumR"].clip(lower=-20, upper=80) * 0.55
+        + out["_wf_pass_rate"] * 65
+        + out["_stress_pass_rate"] * 30
+        + out["_portfolio"] * 0.16
+        + out["_sumR"].clip(lower=-20, upper=80) * 0.45
         + out["_pf"].clip(lower=0, upper=3) * 8
         + out["_test_pf"].clip(lower=0, upper=3) * 5
-        - out["_dd"].clip(lower=0, upper=30) * 1.5
+        - out["_dd"].clip(lower=0, upper=30) * 1.7
+        - out["_corr"].clip(lower=0, upper=1) * 12
     ).round(3)
     reasons = []
     for _, r in out.iterrows():
         bits = []
+        if bool(r.get("strict_pass", False)): bits.append("STRICT paper candidate")
         if int(r.get("gates_passed", 0)) >= 6: bits.append("survived most validation gates")
+        if float(r.get("_wf_pass_rate", 0)) >= 0.5: bits.append("walk-forward survived")
+        else: bits.append("walk-forward weak/zero; keep as watchlist only")
+        if float(r.get("_stress_pass_rate", 0)) >= 0.7: bits.append("execution stress survived")
         if float(r.get("_perm", 0)) >= 95: bits.append("event timing beats random timing")
         if float(r.get("_pf", 0)) >= 1.5: bits.append("PF above 1.5")
         if float(r.get("_dd", 99)) <= 8: bits.append("controlled discovery DD")
@@ -123,11 +142,13 @@ def diversified(df: pd.DataFrame, limit: int, max_per_symbol: int, max_per_famil
     sym_counts: dict[str, int] = {}
     fam_counts: dict[str, int] = {}
     seen_setup = set()
+    seen_signature = set()
     for _, r in df.iterrows():
         sid = str(r.get("setup_id", ""))
         sym = str(r.get("symbol", ""))
         fam = "|".join(str(r.get(c, "")) for c in ["symbol", "tf", "concept", "session"])
-        if sid in seen_setup:
+        signature = "|".join(str(r.get(c, "")) for c in ["symbol", "tf", "concept", "session", "rr", "sl_mult", "real_sumR", "pf", "maxDD_R"])
+        if sid in seen_setup or signature in seen_signature:
             continue
         if sym_counts.get(sym, 0) >= max_per_symbol:
             continue
@@ -135,6 +156,7 @@ def diversified(df: pd.DataFrame, limit: int, max_per_symbol: int, max_per_famil
             continue
         picks.append(r)
         seen_setup.add(sid)
+        seen_signature.add(signature)
         sym_counts[sym] = sym_counts.get(sym, 0) + 1
         fam_counts[fam] = fam_counts.get(fam, 0) + 1
         if len(picks) >= limit:
@@ -147,8 +169,9 @@ def main() -> int:
     p.add_argument("--run", default="", help="Run folder under data/outputs. Defaults to latest all_edges run by modified time.")
     p.add_argument("--limit", type=int, default=20, help="Number of setups to keep.")
     p.add_argument("--max-per-symbol", type=int, default=4, help="Maximum setups per symbol.")
-    p.add_argument("--max-per-family", type=int, default=2, help="Maximum setups per symbol/tf/concept/session family.")
+    p.add_argument("--max-per-family", type=int, default=1, help="Maximum setups per symbol/tf/concept/session family.")
     p.add_argument("--min-gates", type=int, default=5, help="Minimum validation gates passed/watchlisted.")
+    p.add_argument("--strict", action="store_true", help="Only keep setups with meaningful WF/stress/permutation/PF/DD criteria.")
     args = p.parse_args()
 
     run_dir = OUTPUTS / args.run if args.run else latest_run()
@@ -162,15 +185,19 @@ def main() -> int:
         return 1
     ranked = rank(merged)
     filtered = ranked[ranked["gates_passed"] >= args.min_gates].copy()
+    if args.strict:
+        filtered = filtered[filtered["strict_pass"]].copy()
     short = diversified(filtered, limit=args.limit, max_per_symbol=args.max_per_symbol, max_per_family=args.max_per_family)
     cols = [c for c in DISPLAY_COLS if c in short.columns]
-    out_csv = run_dir / "FINAL_SHORTLIST.csv"
-    out_json = run_dir / "FINAL_SHORTLIST.json"
+    stem = "FINAL_SHORTLIST_STRICT" if args.strict else "FINAL_SHORTLIST"
+    out_csv = run_dir / f"{stem}.csv"
+    out_json = run_dir / f"{stem}.json"
     short[cols].to_csv(out_csv, index=False)
     out_json.write_text(json.dumps(short[cols].to_dict("records"), indent=2), encoding="utf-8")
 
     print(json.dumps({
         "run": run_dir.name,
+        "strict": bool(args.strict),
         "input_setups": int(len(merged)),
         "eligible_min_gates": int(len(filtered)),
         "selected": int(len(short)),
