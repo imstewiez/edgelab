@@ -11,6 +11,7 @@ async function req(path: string, init?: RequestInit) {
 }
 
 const jsonPost = (path: string, payload: any = {}) => req(path, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
+const scanQS = (scan?: string) => scan ? `?scan_name=${encodeURIComponent(scan)}` : ''
 
 export const api = {
   health: () => req('/health'),
@@ -21,18 +22,25 @@ export const api = {
   },
   catalog: () => req('/api/catalog'),
   strategyUniverse: () => req('/api/strategy-universe'),
-  validation: (scan?: string) => req(`/api/validation${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
+  eventLab: (scan?: string) => req(`/api/event-lab${scanQS(scan)}`),
+  runEventLab: (payload: any = {}) => jsonPost('/api/jobs/event-lab', payload),
+  validation: (scan?: string) => req(`/api/validation${scanQS(scan)}`),
   validate: (payload: any = {}) => jsonPost('/api/jobs/validate', payload),
-  walkforward: (scan?: string) => req(`/api/walkforward${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
+  walkforward: (scan?: string) => req(`/api/walkforward${scanQS(scan)}`),
   runWalkforward: (payload: any = {}) => jsonPost('/api/jobs/walkforward', payload),
-  executionStress: (scan?: string) => req(`/api/execution-stress${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
+  executionStress: (scan?: string) => req(`/api/execution-stress${scanQS(scan)}`),
   runExecutionStress: (payload: any = {}) => jsonPost('/api/jobs/execution-stress', payload),
-  monteCarlo: (scan?: string) => req(`/api/monte-carlo${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
+  monteCarlo: (scan?: string) => req(`/api/monte-carlo${scanQS(scan)}`),
   runMonteCarlo: (payload: any = {}) => jsonPost('/api/jobs/monte-carlo', payload),
-  sensitivity: (scan?: string) => req(`/api/sensitivity${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
+  sensitivity: (scan?: string) => req(`/api/sensitivity${scanQS(scan)}`),
   runSensitivity: (payload: any = {}) => jsonPost('/api/jobs/sensitivity', payload),
-  portfolioRisk: (scan?: string) => req(`/api/portfolio-risk${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
+  portfolioRisk: (scan?: string) => req(`/api/portfolio-risk${scanQS(scan)}`),
   runPortfolioRisk: (payload: any = {}) => jsonPost('/api/jobs/portfolio-risk', payload),
+  permutationTest: (scan?: string) => req(`/api/permutation-test${scanQS(scan)}`),
+  runPermutationTest: (payload: any = {}) => jsonPost('/api/jobs/permutation-test', payload),
+  incubation: (scan?: string) => req(`/api/incubation${scanQS(scan)}`),
+  seedIncubation: (payload: any = {}) => jsonPost('/api/jobs/seed-incubation', payload),
+  exportEA: (payload: any = {}) => jsonPost('/api/ea/export', payload),
   jobs: () => req('/api/jobs'),
   clearCompletedJobs: () => req('/api/jobs/completed', { method: 'DELETE' }),
   startImport: () => req('/api/jobs/import', { method: 'POST' }),
