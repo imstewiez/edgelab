@@ -8,6 +8,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from pipeline_io import EDGE_COLUMNS, EVENT_COLUMNS, EVENT_SUMMARY_COLUMNS, safe_read_csv, safe_to_csv
 from quantlab_core import OUTPUTS_DIR, feature_path, signals, session_mask, HORIZON, row_setup_id
 
 
@@ -30,12 +31,12 @@ def _candidate_source(out: Path) -> pd.DataFrame:
     for fn in ["candidate_edges.csv", "all_edges.csv"]:
         p = out / fn
         if p.exists():
-            df = pd.read_csv(p).replace([np.inf, -np.inf], np.nan).fillna("")
+            df = safe_read_csv(p, EDGE_COLUMNS)
             if not df.empty:
                 if "score" in df.columns:
                     df = df.sort_values("score", ascending=False)
                 return df.head(80).copy()
-    return pd.DataFrame()
+    return pd.DataFrame(columns=EDGE_COLUMNS)
 
 
 def _barrier_outcome(df: pd.DataFrame, entry_idx: int, side: int, rr: float, sl_mult: float, horizon: int):
@@ -54,17 +55,11 @@ def _barrier_outcome(df: pd.DataFrame, entry_idx: int, side: int, rr: float, sl_
         hit_tp = hi >= tp if side == 1 else lo <= tp
         hit_sl = lo <= sl if side == 1 else hi >= sl
         if hit_tp and hit_sl:
-            label = "ambiguous_sl_first"
-            hit_idx = j
-            break
+            label = "ambiguous_sl_first"; hit_idx = j; break
         if hit_tp:
-            label = "tp_first"
-            hit_idx = j
-            break
+            label = "tp_first"; hit_idx = j; break
         if hit_sl:
-            label = "sl_first"
-            hit_idx = j
-            break
+            label = "sl_first"; hit_idx = j; break
     window = df.iloc[entry_idx:end + 1]
     if side == 1:
         mfe = (float(window.high.max()) - entry) / risk
@@ -76,11 +71,20 @@ def _barrier_outcome(df: pd.DataFrame, entry_idx: int, side: int, rr: float, sl_
     return {"outcome": label, "outcome_index": int(hit_idx), "forward_R": round(float(fwd), 5), "mfe_R": round(float(mfe), 5), "mae_R": round(float(mae), 5)}
 
 
+def _empty_summary(out: Path, reason: str):
+    safe_to_csv([], out / "events.csv", EVENT_COLUMNS)
+    safe_to_csv([], out / "event_summary.csv", EVENT_SUMMARY_COLUMNS)
+    summary = {"scan_name": out.name, "setups_analyzed": 0, "events": 0, "event_ready": 0, "low_sample": 0, "top": [], "warning": reason, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    (out / "EVENT_LAB_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
 def run_event_lab(scan_name: str | None = None, logger: Callable[[str], None] = print):
     out = _run_dir(scan_name)
     candidates = _candidate_source(out)
     if candidates.empty:
-        raise RuntimeError("No discovery rows found. Run discovery first.")
+        logger("Event Lab skipped: no discovery rows available.")
+        return _empty_summary(out, "No discovery rows available. Discovery produced no candidates/all_edges rows.")
 
     logger(f"Event Lab started for {out.name}: {len(candidates)} setup rows")
     events: list[dict] = []
@@ -90,22 +94,21 @@ def run_event_lab(scan_name: str | None = None, logger: Callable[[str], None] = 
         sym, tf, concept = str(r.symbol), str(r.tf), str(r.concept)
         fp = feature_path(sym, tf)
         if not fp.exists():
+            logger(f"Missing feature cache for {sym} {tf}; skipping")
             continue
         df = pd.read_pickle(fp).reset_index(drop=True)
         lb = int(float(r.get("lookback", 20)))
-        rr = float(r.get("rr", 1.4))
-        slm = float(r.get("sl_mult", 1.4))
-        sess = str(r.get("session", "all"))
+        rr = float(r.get("rr", 1.4)); slm = float(r.get("sl_mult", 1.4)); sess = str(r.get("session", "all"))
         setup_id = str(r.get("setup_id") or row_setup_id(r))
-        b, s = signals(df, concept, lb)
-        mask = session_mask(df, sess)
-        b = (b & mask).fillna(False)
-        s = (s & mask).fillna(False)
-        idxs = list(np.where((b | s).values)[0])
-        idxs = [i for i in idxs if i >= 250 and i + 2 < len(df)]
+        try:
+            b, s = signals(df, concept, lb); mask = session_mask(df, sess)
+        except Exception as e:
+            logger(f"Event Lab signal error {setup_id}: {e}")
+            continue
+        b = (b & mask).fillna(False); s = (s & mask).fillna(False)
+        idxs = [i for i in list(np.where((b | s).values)[0]) if i >= 250 and i + 2 < len(df)]
         if len(idxs) > 500:
-            step = max(1, len(idxs) // 500)
-            idxs = idxs[::step][:500]
+            step = max(1, len(idxs) // 500); idxs = idxs[::step][:500]
         setup_events = []
         for i in idxs:
             side = 1 if bool(b.iloc[i]) else -1
@@ -113,71 +116,18 @@ def run_event_lab(scan_name: str | None = None, logger: Callable[[str], None] = 
             outcome = _barrier_outcome(df, entry_idx, side, rr, slm, HORIZON.get(tf, 48))
             if not outcome:
                 continue
-            row = {
-                "setup_id": setup_id,
-                "symbol": sym,
-                "tf": tf,
-                "concept": concept,
-                "session": sess,
-                "lookback": lb,
-                "rr": rr,
-                "sl_mult": slm,
-                "event_time": str(pd.to_datetime(df.time.iloc[i])),
-                "entry_time": str(pd.to_datetime(df.time.iloc[entry_idx])),
-                "side": "long" if side == 1 else "short",
-                "hour": int(df.hour.iloc[i]) if "hour" in df.columns else "",
-                "weekday": int(df.weekday.iloc[i]) if "weekday" in df.columns else "",
-                "atr_rank_500": round(float(df.atr_rank_500.iloc[i]), 5) if "atr_rank_500" in df.columns and pd.notna(df.atr_rank_500.iloc[i]) else "",
-                "range_rank_200": round(float(df.range_rank_200.iloc[i]), 5) if "range_rank_200" in df.columns and pd.notna(df.range_rank_200.iloc[i]) else "",
-                "ema21_slope_atr": round(float(df.ema21_slope_atr.iloc[i]), 5) if "ema21_slope_atr" in df.columns and pd.notna(df.ema21_slope_atr.iloc[i]) else "",
-                "wick_pressure": round(float(df.wick_pressure.iloc[i]), 5) if "wick_pressure" in df.columns and pd.notna(df.wick_pressure.iloc[i]) else "",
-                "rsi14": round(float(df.rsi14.iloc[i]), 5) if "rsi14" in df.columns and pd.notna(df.rsi14.iloc[i]) else "",
-                "compression": bool(df.compression.iloc[i]) if "compression" in df.columns else False,
-                **outcome,
-            }
-            events.append(row)
-            setup_events.append(row)
+            row = {"setup_id": setup_id, "symbol": sym, "tf": tf, "concept": concept, "session": sess, "lookback": lb, "rr": rr, "sl_mult": slm, "event_time": str(pd.to_datetime(df.time.iloc[i])), "entry_time": str(pd.to_datetime(df.time.iloc[entry_idx])), "side": "long" if side == 1 else "short", "hour": int(df.hour.iloc[i]) if "hour" in df.columns else "", "weekday": int(df.weekday.iloc[i]) if "weekday" in df.columns else "", "atr_rank_500": round(float(df.atr_rank_500.iloc[i]), 5) if "atr_rank_500" in df.columns and pd.notna(df.atr_rank_500.iloc[i]) else "", "range_rank_200": round(float(df.range_rank_200.iloc[i]), 5) if "range_rank_200" in df.columns and pd.notna(df.range_rank_200.iloc[i]) else "", "ema21_slope_atr": round(float(df.ema21_slope_atr.iloc[i]), 5) if "ema21_slope_atr" in df.columns and pd.notna(df.ema21_slope_atr.iloc[i]) else "", "wick_pressure": round(float(df.wick_pressure.iloc[i]), 5) if "wick_pressure" in df.columns and pd.notna(df.wick_pressure.iloc[i]) else "", "rsi14": round(float(df.rsi14.iloc[i]), 5) if "rsi14" in df.columns and pd.notna(df.rsi14.iloc[i]) else "", "compression": bool(df.compression.iloc[i]) if "compression" in df.columns else False, **outcome}
+            events.append(row); setup_events.append(row)
         if setup_events:
-            edf = pd.DataFrame(setup_events)
-            n = len(edf)
-            summaries.append({
-                "setup_id": setup_id,
-                "symbol": sym,
-                "tf": tf,
-                "concept": concept,
-                "session": sess,
-                "lookback": lb,
-                "rr": rr,
-                "sl_mult": slm,
-                "events": int(n),
-                "long_events": int((edf.side == "long").sum()),
-                "short_events": int((edf.side == "short").sum()),
-                "tp_first_pct": round(float((edf.outcome == "tp_first").mean()), 4),
-                "sl_first_pct": round(float((edf.outcome.isin(["sl_first", "ambiguous_sl_first"])).mean()), 4),
-                "timeout_pct": round(float((edf.outcome == "timeout").mean()), 4),
-                "mean_forward_R": round(float(edf.forward_R.mean()), 5),
-                "median_forward_R": round(float(edf.forward_R.median()), 5),
-                "mean_mfe_R": round(float(edf.mfe_R.mean()), 5),
-                "mean_mae_R": round(float(edf.mae_R.mean()), 5),
-                "event_status": "event_ready" if n >= 50 else "low_sample",
-                "verdict": "Enough events for contextual analysis" if n >= 50 else "Low event sample; treat cautiously",
-            })
+            edf = pd.DataFrame(setup_events); n = len(edf)
+            summaries.append({"setup_id": setup_id, "symbol": sym, "tf": tf, "concept": concept, "session": sess, "lookback": lb, "rr": rr, "sl_mult": slm, "events": int(n), "long_events": int((edf.side == "long").sum()), "short_events": int((edf.side == "short").sum()), "tp_first_pct": round(float((edf.outcome == "tp_first").mean()), 4), "sl_first_pct": round(float((edf.outcome.isin(["sl_first", "ambiguous_sl_first"])).mean()), 4), "timeout_pct": round(float((edf.outcome == "timeout").mean()), 4), "mean_forward_R": round(float(edf.forward_R.mean()), 5), "median_forward_R": round(float(edf.forward_R.median()), 5), "mean_mfe_R": round(float(edf.mfe_R.mean()), 5), "mean_mae_R": round(float(edf.mae_R.mean()), 5), "event_status": "event_ready" if n >= 50 else "low_sample", "verdict": "Enough events for contextual analysis" if n >= 50 else "Low event sample; treat cautiously"})
 
-    events_df = pd.DataFrame(events)
+    events_df = safe_to_csv(events, out / "events.csv", EVENT_COLUMNS)
     summary_df = pd.DataFrame(summaries)
     if not summary_df.empty:
         summary_df = summary_df.sort_values(["event_status", "events", "mean_forward_R"], ascending=[True, False, False])
-    events_df.to_csv(out / "events.csv", index=False)
-    summary_df.to_csv(out / "event_summary.csv", index=False)
-    summary = {
-        "scan_name": out.name,
-        "setups_analyzed": int(len(summary_df)),
-        "events": int(len(events_df)),
-        "event_ready": int((summary_df.event_status == "event_ready").sum()) if not summary_df.empty else 0,
-        "low_sample": int((summary_df.event_status == "low_sample").sum()) if not summary_df.empty else 0,
-        "top": summary_df.head(25).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not summary_df.empty else [],
-        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
+    summary_df = safe_to_csv(summary_df, out / "event_summary.csv", EVENT_SUMMARY_COLUMNS)
+    summary = {"scan_name": out.name, "setups_analyzed": int(len(summary_df)), "events": int(len(events_df)), "event_ready": int((summary_df.event_status == "event_ready").sum()) if not summary_df.empty else 0, "low_sample": int((summary_df.event_status == "low_sample").sum()) if not summary_df.empty else 0, "top": summary_df.head(25).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not summary_df.empty else [], "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
     (out / "EVENT_LAB_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     logger(f"Event Lab complete: {summary['events']} events, {summary['event_ready']} event-ready setups")
     return summary
