@@ -8,6 +8,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from pipeline_io import INCUBATION_COLUMNS, MC_COLUMNS, PERMUTATION_COLUMNS, PORTFOLIO_COLUMNS, SENSITIVITY_COLUMNS, safe_read_csv, safe_to_csv
 from quantlab_core import STORE, OUTPUTS_DIR
 
 INCUBATION_DIR = STORE / "incubation"
@@ -31,26 +32,25 @@ def _run_dir(scan_name: str | None) -> Path:
 
 def _load_existing() -> pd.DataFrame:
     INCUBATION_DIR.mkdir(parents=True, exist_ok=True)
-    if not INCUBATION_PATH.exists():
-        return pd.DataFrame()
-    return pd.read_csv(INCUBATION_PATH).replace([np.inf, -np.inf], np.nan).fillna("")
+    return safe_read_csv(INCUBATION_PATH, INCUBATION_COLUMNS)
 
 
 def _source(out: Path) -> pd.DataFrame:
-    for fn, status_col, ok in [
-        ("stage8_permutation_test.csv", "permutation_status", "perm_pass|perm_watchlist"),
-        ("stage7_portfolio_risk.csv", "portfolio_status", "portfolio_pass|portfolio_watchlist"),
-        ("stage6_sensitivity.csv", "sensitivity_status", "sensitivity_pass|sensitivity_watchlist"),
-        ("stage5_monte_carlo.csv", "mc_status", "mc_pass|mc_watchlist"),
-        ("candidate_edges.csv", "status", "candidate"),
+    for fn, status_col, ok, cols in [
+        ("stage8_permutation_test.csv", "permutation_status", "perm_pass|perm_watchlist", PERMUTATION_COLUMNS),
+        ("stage7_portfolio_risk.csv", "portfolio_status", "portfolio_pass|portfolio_watchlist", PORTFOLIO_COLUMNS),
+        ("stage6_sensitivity.csv", "sensitivity_status", "sensitivity_pass|sensitivity_watchlist", SENSITIVITY_COLUMNS),
+        ("stage5_monte_carlo.csv", "mc_status", "mc_pass|mc_watchlist", MC_COLUMNS),
     ]:
         p = out / fn
-        if p.exists():
-            df = pd.read_csv(p).replace([np.inf, -np.inf], np.nan).fillna("")
-            if df.empty:
-                continue
-            if status_col in df.columns:
-                df = df[df[status_col].astype(str).str.contains(ok, case=False, regex=True)]
+        if not p.exists():
+            continue
+        df = safe_read_csv(p, cols)
+        if df.empty:
+            continue
+        if status_col in df.columns:
+            df = df[df[status_col].astype(str).str.contains(ok, case=False, regex=True)]
+        if not df.empty:
             return df.head(40).copy()
     return pd.DataFrame()
 
@@ -58,17 +58,18 @@ def _source(out: Path) -> pd.DataFrame:
 def seed_incubation(scan_name: str | None = None, logger: Callable[[str], None] = print):
     out = _run_dir(scan_name)
     src = _source(out)
-    if src.empty:
-        raise RuntimeError("No passing/watchlist setups found to seed incubation.")
     existing = _load_existing()
-    existing_ids = set(existing.setup_id.astype(str)) if "setup_id" in existing.columns else set()
+    if src.empty:
+        safe_to_csv(existing, INCUBATION_PATH, INCUBATION_COLUMNS)
+        logger("Incubation skipped: no passing/watchlist setups found after validation gates.")
+        return read_incubation(scan_name)
+    existing_ids = set(existing.setup_id.astype(str)) if not existing.empty and "setup_id" in existing.columns else set()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     rows = []
     for _, r in src.iterrows():
         sid = str(r.get("setup_id", ""))
         if not sid or sid in existing_ids:
             continue
-        status = "paper_incubation"
         rows.append({
             "setup_id": sid,
             "scan_name": out.name,
@@ -79,7 +80,7 @@ def seed_incubation(scan_name: str | None = None, logger: Callable[[str], None] 
             "lookback": r.get("lookback", ""),
             "rr": r.get("rr", ""),
             "sl_mult": r.get("sl_mult", ""),
-            "incubation_status": status,
+            "incubation_status": "paper_incubation",
             "created_at": now,
             "updated_at": now,
             "paper_days": 0,
@@ -90,9 +91,9 @@ def seed_incubation(scan_name: str | None = None, logger: Callable[[str], None] 
             "promotion_rule": "Minimum 30 paper days, 30+ trades, positive R, controlled DD, no broker execution issues.",
         })
     combined = pd.concat([existing, pd.DataFrame(rows)], ignore_index=True) if not existing.empty else pd.DataFrame(rows)
-    combined.to_csv(INCUBATION_PATH, index=False)
+    combined = safe_to_csv(combined, INCUBATION_PATH, INCUBATION_COLUMNS)
     logger(f"Incubation seeded: {len(rows)} new setups, {len(combined)} total tracked")
-    return read_incubation()
+    return read_incubation(scan_name)
 
 
 def read_incubation(scan_name: str | None = None):
