@@ -8,12 +8,13 @@ import numpy as np
 import pandas as pd
 
 import quantlab_core as qc
+from pipeline_io import EDGE_COLUMNS, safe_to_csv
 
 EFFICIENT_MAX_BARS = {"M1": 60000, "M5": 90000, "M15": 120000, "M30": 140000, "H1": 160000}
 
 
 def _concepts(tf: str, mode: str) -> list[str]:
-    if mode == "broad":
+    if mode in {"broad", "exhaustive"}:
         return qc.concepts_for_tf(tf)
     core = ["breakout_trend", "compression_breakout", "sweep_reclaim", "prev_day_sweep", "pullback_ema21"]
     if tf in ["M5", "M15", "M30", "H1"]:
@@ -22,11 +23,11 @@ def _concepts(tf: str, mode: str) -> list[str]:
 
 
 def _profile(tf: str, mode: str):
-    if mode == "broad":
+    if mode in {"broad", "exhaustive"}:
         sessions = ["all", "london_ny", "ny", "overlap"]
         lbs = [20, 50] if tf in ["H1", "H4", "D1"] else [12, 20, 48]
-        rrs = [1.0, 1.4, 2.0]
-        slms = [1.0, 1.4]
+        rrs = [1.0, 1.4, 2.0, 2.5]
+        slms = [1.0, 1.4, 2.0]
     else:
         sessions = ["all", "london_ny"] if tf in ["H4", "D1"] else ["all", "london_ny", "ny"]
         lbs = [20] if tf in ["H1", "H4", "D1"] else [12, 20]
@@ -37,24 +38,34 @@ def _profile(tf: str, mode: str):
 
 def _prepare_df(df: pd.DataFrame, tf: str, mode: str, logger: Callable[[str], None]) -> pd.DataFrame:
     if mode in {"exhaustive", "broad"}:
-        return df
+        return df.reset_index(drop=True)
     max_bars = EFFICIENT_MAX_BARS.get(tf)
     if max_bars and len(df) > max_bars:
         logger(f"  using recent {max_bars:,} bars from {len(df):,} available for efficient discovery")
         return df.tail(max_bars).reset_index(drop=True)
-    return df
+    return df.reset_index(drop=True)
 
 
-def discover_edges(name, mode="priority", symbols="", tfs="", logger: Callable[[str], None] = print):
-    if mode == "exhaustive" and hasattr(qc, "discover_edges_exhaustive"):
-        logger("Exhaustive mode selected; using original full-grid discovery.")
-        return qc.discover_edges_exhaustive(name, mode, symbols, tfs, logger)
+def _empty_result(name: str, out, datasets: list[dict], logger: Callable[[str], None], reason: str):
+    safe_to_csv(pd.DataFrame(datasets), out / "datasets_scanned.csv")
+    safe_to_csv([], out / "all_edges.csv", EDGE_COLUMNS)
+    safe_to_csv([], out / "candidate_edges.csv", EDGE_COLUMNS)
+    safe_to_csv([], out / "rejected_edges.csv", EDGE_COLUMNS)
+    (out / "edge_cards.json").write_text("[]", encoding="utf-8")
+    qc.LATEST_CARDS_PATH.write_text("[]", encoding="utf-8")
+    report = f"# EdgeLab Auto Discovery Report — {name}\n\nDatasets scanned: {len(datasets)}\n\nEdges screened: 0\n\nFirst-pass candidates: 0\n\nReason: {reason}\n"
+    (out / "DISCOVERY_REPORT.md").write_text(report, encoding="utf-8")
+    (out / "QUANTLAB_REPORT.md").write_text(report, encoding="utf-8")
+    logger(reason)
+    return {"scan_name": name, "datasets": len(datasets), "tested_edges": 0, "candidates": 0, "rejected": 0, "mode": "empty", "active_concepts_tested": [], "warning": reason}
 
+
+def discover_edges(name, mode="efficient", symbols="", tfs="", logger: Callable[[str], None] = print):
     if not qc.FEATURE_CATALOG_PATH.exists():
         raise RuntimeError("No feature catalog found. Run Build Features first.")
 
-    mode = "priority" if mode in {"auto", ""} else str(mode or "priority")
-    cat = pd.read_csv(qc.FEATURE_CATALOG_PATH)
+    mode = "efficient" if mode in {"auto", "priority", ""} else str(mode or "efficient")
+    cat = pd.read_csv(qc.FEATURE_CATALOG_PATH).replace([np.inf, -np.inf], np.nan).fillna("")
     if symbols:
         cat = cat[cat.symbol.isin({x.strip().upper() for x in symbols.split(",") if x.strip()})]
     if tfs:
@@ -74,13 +85,21 @@ def discover_edges(name, mode="priority", symbols="", tfs="", logger: Callable[[
     started = time.time()
     logger(f"Efficient discovery started. mode={mode}, datasets={len(cat)}")
 
+    if cat.empty:
+        return _empty_result(name, out, datasets, logger, "No datasets matched selected mode/symbol/timeframe filters.")
+
     for ds_i, (_, r) in enumerate(cat.iterrows(), 1):
-        sym, tf = r.symbol, r.tf
+        sym, tf = str(r.symbol), str(r.tf)
         fp = qc.feature_path(sym, tf)
         if not fp.exists():
+            logger(f"[{ds_i}/{len(cat)}] Missing feature cache for {sym} {tf}; skipping")
             continue
-        raw_df = pd.read_pickle(fp)
-        df = _prepare_df(raw_df, tf, mode, logger)
+        try:
+            raw_df = pd.read_pickle(fp)
+            df = _prepare_df(raw_df, tf, mode, logger)
+        except Exception as e:
+            logger(f"[{ds_i}/{len(cat)}] Could not read feature cache for {sym} {tf}: {e}")
+            continue
         datasets.append({"symbol": sym, "tf": tf, "rows": len(df), "source_rows": len(raw_df), "start": str(df.time.min()), "end": str(df.time.max()), "has_spread_points": "spread_points" in df.columns})
         concepts = _concepts(tf, mode)
         sessions, lbs, rrs, slms = _profile(tf, mode)
@@ -91,8 +110,12 @@ def discover_edges(name, mode="priority", symbols="", tfs="", logger: Callable[[
 
         for concept in concepts:
             for lb in lbs:
-                b0, s0 = qc.signals(df, concept, lb)
-                raw_events = int(b0.sum() + s0.sum())
+                try:
+                    b0, s0 = qc.signals(df, concept, lb)
+                    raw_events = int(b0.sum() + s0.sum())
+                except Exception as e:
+                    logger(f"  signal error {concept} lb={lb}: {e}")
+                    continue
                 if raw_events < min_tr:
                     continue
                 logger(f"  {concept} lb={lb}: raw_events={raw_events}")
@@ -101,8 +124,12 @@ def discover_edges(name, mode="priority", symbols="", tfs="", logger: Callable[[
                     for rr in rrs:
                         for slm in slms:
                             tested_here += 1
-                            tr = qc.backtest(df, b0 & sm, s0 & sm, rr, slm, qc.HORIZON.get(tf, 48), symbol=sym)
-                            base = qc.st(tr)
+                            try:
+                                tr = qc.backtest(df, b0 & sm, s0 & sm, rr, slm, qc.HORIZON.get(tf, 48), symbol=sym)
+                                base = qc.st(tr)
+                            except Exception as e:
+                                logger(f"    backtest error {concept} {sess} lb={lb} rr={rr} sl={slm}: {e}")
+                                continue
                             if not base or base["n"] < min_tr:
                                 continue
                             split = max(1, int(len(tr) * 0.7))
@@ -125,14 +152,17 @@ def discover_edges(name, mode="priority", symbols="", tfs="", logger: Callable[[
                             results.append(rec)
         logger(f"[{ds_i}/{len(cat)}] Done {sym} {tf}: tested_grid={tested_here}, total_results={len(results)}, elapsed={time.time() - started:.1f}s")
 
-    res = pd.DataFrame(results).sort_values("score", ascending=False) if results else pd.DataFrame()
-    cand = res[res.status == "candidate"] if not res.empty else pd.DataFrame()
-    rej = res[res.status == "rejected"] if not res.empty else pd.DataFrame()
+    if not results:
+        return _empty_result(name, out, datasets, logger, "Discovery completed but no setup passed the minimum trade/sample filters.")
+
+    res = pd.DataFrame(results).sort_values("score", ascending=False)
+    cand = res[res.status == "candidate"]
+    rej = res[res.status == "rejected"]
     cards = [qc.edge_card(x) for x in cand.head(25).to_dict("records")] if not cand.empty else []
-    pd.DataFrame(datasets).to_csv(out / "datasets_scanned.csv", index=False)
-    res.to_csv(out / "all_edges.csv", index=False)
-    cand.to_csv(out / "candidate_edges.csv", index=False)
-    rej.to_csv(out / "rejected_edges.csv", index=False)
+    safe_to_csv(pd.DataFrame(datasets), out / "datasets_scanned.csv")
+    safe_to_csv(res, out / "all_edges.csv", EDGE_COLUMNS)
+    safe_to_csv(cand, out / "candidate_edges.csv", EDGE_COLUMNS)
+    safe_to_csv(rej, out / "rejected_edges.csv", EDGE_COLUMNS)
     (out / "edge_cards.json").write_text(json.dumps(cards, indent=2), encoding="utf-8")
     qc.LATEST_CARDS_PATH.write_text(json.dumps(cards, indent=2), encoding="utf-8")
     report = qc.make_report(name, datasets, res, cand, rej, cards)
