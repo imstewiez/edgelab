@@ -22,6 +22,8 @@ export const api = {
   runWalkforward: (payload: any = {}) => req('/api/jobs/walkforward', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
   executionStress: (scan?: string) => req(`/api/execution-stress${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
   runExecutionStress: (payload: any = {}) => req('/api/jobs/execution-stress', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
+  monteCarlo: (scan?: string) => req(`/api/monte-carlo${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
+  runMonteCarlo: (payload: any = {}) => req('/api/jobs/monte-carlo', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
   jobs: () => req('/api/jobs'),
   clearCompletedJobs: () => req('/api/jobs/completed', { method: 'DELETE' }),
   startImport: () => req('/api/jobs/import', { method: 'POST' }),
