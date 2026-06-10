@@ -8,6 +8,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from pipeline_io import EDGE_COLUMNS, MC_COLUMNS, STRESS_COLUMNS, VALIDATION_COLUMNS, WF_COLUMNS, safe_read_csv, safe_to_csv
 from quantlab_core import OUTPUTS_DIR, HORIZON, backtest, feature_path, filter_by_setup_keys, row_setup_id, session_mask, signals
 
 MONTE_CARLO_PATH = OUTPUTS_DIR / "latest_monte_carlo.json"
@@ -32,24 +33,21 @@ def _num(v, default=0.0):
 def _max_drawdown(values: np.ndarray) -> float:
     if len(values) == 0:
         return 0.0
-    eq = np.cumsum(values)
-    peak = np.maximum.accumulate(eq)
+    eq = np.cumsum(values); peak = np.maximum.accumulate(eq)
     return float(np.max(peak - eq))
 
 
 def _max_loss_streak(values: np.ndarray) -> int:
-    cur = 0
-    worst = 0
+    cur = 0; worst = 0
     for x in values:
         if x <= 0:
-            cur += 1
-            worst = max(worst, cur)
+            cur += 1; worst = max(worst, cur)
         else:
             cur = 0
     return int(worst)
 
 
-def _simulate(R: np.ndarray, sims: int = 800, skip_prob: float = 0.03, slip_sigma: float = 0.035):
+def _simulate(R: np.ndarray, sims: int = 500, skip_prob: float = 0.03, slip_sigma: float = 0.035):
     rng = np.random.default_rng(42)
     totals, dds, streaks = [], [], []
     if len(R) == 0:
@@ -60,33 +58,32 @@ def _simulate(R: np.ndarray, sims: int = 800, skip_prob: float = 0.03, slip_sigm
         if len(sample) == 0:
             sample = np.array([-1.0])
         stressed = sample + rng.normal(loc=-0.012, scale=slip_sigma, size=len(sample))
-        totals.append(float(np.sum(stressed)))
-        dds.append(_max_drawdown(stressed))
-        streaks.append(_max_loss_streak(stressed))
+        totals.append(float(np.sum(stressed))); dds.append(_max_drawdown(stressed)); streaks.append(_max_loss_streak(stressed))
     totals = np.array(totals); dds = np.array(dds); streaks = np.array(streaks)
     return {"median_totalR": round(float(np.median(totals)), 3), "p05_totalR": round(float(np.percentile(totals, 5)), 3), "p95_dd_R": round(float(np.percentile(dds, 95)), 3), "p99_dd_R": round(float(np.percentile(dds, 99)), 3), "p95_loss_streak": int(np.percentile(streaks, 95)), "profit_probability": round(float((totals > 0).mean()), 3), "ruin_probability": round(float((dds > 20).mean()), 3)}
 
 
 def _load_candidate_source(run_dir: Path) -> pd.DataFrame:
-    cand = run_dir / "candidate_edges.csv"
-    if not cand.exists():
-        raise RuntimeError("No candidate_edges.csv found. Run Discover Edges first.")
-    df = pd.read_csv(cand).replace([np.inf, -np.inf], np.nan).fillna("")
-    for file_name, status_col, allowed in [
-        ("stage4_execution_stress.csv", "stress_status", {"stress_pass", "stress_watchlist"}),
-        ("stage3_walkforward.csv", "wf_status", {"wf_pass", "wf_watchlist"}),
-        ("stage2_validation.csv", "robustness_status", {"robust_candidate", "watchlist"}),
+    source = safe_read_csv(run_dir / "candidate_edges.csv", EDGE_COLUMNS)
+    if source.empty:
+        return source
+    for file_name, status_col, allowed, cols in [
+        ("stage4_execution_stress.csv", "stress_status", {"stress_pass", "stress_watchlist"}, STRESS_COLUMNS),
+        ("stage3_walkforward.csv", "wf_status", {"wf_pass", "wf_watchlist"}, WF_COLUMNS),
+        ("stage2_validation.csv", "robustness_status", {"robust_candidate", "watchlist"}, VALIDATION_COLUMNS),
     ]:
         p = run_dir / file_name
         if not p.exists():
             continue
-        gate = pd.read_csv(p).replace([np.inf, -np.inf], np.nan).fillna("")
+        gate = safe_read_csv(p, cols)
+        if gate.empty:
+            continue
         if status_col in gate.columns:
             gate = gate[gate[status_col].isin(allowed)]
-        filtered = filter_by_setup_keys(df, gate)
+        filtered = filter_by_setup_keys(source, gate)
         if len(filtered):
             return filtered.head(80)
-    return df.head(80)
+    return source.head(80)
 
 
 def _row_monte_carlo(row: dict):
@@ -127,9 +124,9 @@ def run_monte_carlo(scan_name: str | None = None, logger: Callable[[str], None] 
         out = _row_monte_carlo(row)
         if out:
             rows.append(out)
-    df = pd.DataFrame(rows).sort_values("mc_score", ascending=False) if rows else pd.DataFrame()
-    df.to_csv(run_dir / "stage5_monte_carlo.csv", index=False)
-    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(df)), "mc_pass": int((df.mc_status == "mc_pass").sum()) if not df.empty else 0, "mc_watchlist": int((df.mc_status == "mc_watchlist").sum()) if not df.empty else 0, "mc_fail": int((df.mc_status == "mc_fail").sum()) if not df.empty else 0, "ea_ready": 0, "stage": "Stage 5 Monte Carlo robustness", "warning": "Monte Carlo uses the exact setup_id trade R sequence from the current broker-aware OHLC backtest. It is a robustness gate, not live-proof.", "top": df.head(25).to_dict("records") if not df.empty else []}
+    df = pd.DataFrame(rows).sort_values("mc_score", ascending=False) if rows else pd.DataFrame(columns=MC_COLUMNS)
+    df = safe_to_csv(df, run_dir / "stage5_monte_carlo.csv", MC_COLUMNS)
+    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(df)), "mc_pass": int((df.mc_status == "mc_pass").sum()) if not df.empty else 0, "mc_watchlist": int((df.mc_status == "mc_watchlist").sum()) if not df.empty else 0, "mc_fail": int((df.mc_status == "mc_fail").sum()) if not df.empty else 0, "ea_ready": 0, "stage": "Stage 5 Monte Carlo robustness", "warning": "Monte Carlo uses the exact setup_id trade R sequence from the current broker-aware OHLC backtest. It is a robustness gate, not live-proof.", "top": df.head(25).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not df.empty else []}
     (run_dir / "MONTE_CARLO_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     MONTE_CARLO_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
