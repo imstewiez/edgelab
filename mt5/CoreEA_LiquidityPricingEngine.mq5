@@ -13,16 +13,19 @@
 //| - Optional FVG/imbalance confirmation                             |
 //| - Premium/discount filter                                         |
 //|                                                                  |
-//| SAFE DEFAULT: PaperMode=true and AllowLiveTrading=false.          |
+//| SAFE DEFAULT: live trading is blocked unless explicitly enabled.  |
+//| In Strategy Tester, ExecuteOrdersInTester=true places simulated   |
+//| tester orders so the MT5 report shows real trades/equity.         |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.000"
+#property version   "1.001"
 #property description "CoreEA liquidity/pricing engine for MT5"
 
 #include <Trade/Trade.mqh>
 
 input bool   PaperMode                 = true;
 input bool   AllowLiveTrading           = false;
+input bool   ExecuteOrdersInTester      = true;
 input string TradeSymbol                = "AUDUSD";
 input ENUM_TIMEFRAMES SignalTF          = PERIOD_M5;
 input double RiskPercent                = 0.50;
@@ -86,6 +89,14 @@ struct PaperTrade
    double risk;
 };
 
+struct LiquidityLevels
+{
+   double asiaHigh;
+   double asiaLow;
+   double prevDayHigh;
+   double prevDayLow;
+};
+
 PaperTrade paper;
 
 //+------------------------------------------------------------------+
@@ -113,7 +124,10 @@ int OnInit()
 
    trade.SetExpertMagicNumber(MagicNumber);
    EnsureLogHeader();
-   Print("CoreEA Liquidity Pricing Engine initialized. PaperMode=", PaperMode, " AllowLiveTrading=", AllowLiveTrading);
+   Print("CoreEA Liquidity Pricing Engine initialized. PaperMode=", PaperMode,
+         " AllowLiveTrading=", AllowLiveTrading,
+         " ExecuteOrdersInTester=", ExecuteOrdersInTester,
+         " MQL_TESTER=", (bool)MQLInfoInteger(MQL_TESTER));
    return INIT_SUCCEEDED;
 }
 
@@ -248,15 +262,6 @@ void EvaluateLiquiditySetup()
 }
 
 //+------------------------------------------------------------------+
-struct LiquidityLevels
-{
-   double asiaHigh;
-   double asiaLow;
-   double prevDayHigh;
-   double prevDayLow;
-};
-
-//+------------------------------------------------------------------+
 bool BuildLiquidityLevels(LiquidityLevels &levels)
 {
    levels.asiaHigh = -DBL_MAX;
@@ -356,9 +361,6 @@ bool HasDisplacement(int side, double atr)
 //+------------------------------------------------------------------+
 bool HasFVG(int side)
 {
-   // Uses three closed candles: shifts 3,2,1.
-   // Bullish imbalance: low of recent candle is above high two candles back.
-   // Bearish imbalance: high of recent candle is below low two candles back.
    double high3 = iHigh(TradeSymbol, SignalTF, 3);
    double low3 = iLow(TradeSymbol, SignalTF, 3);
    double high1 = iHigh(TradeSymbol, SignalTF, 1);
@@ -386,13 +388,22 @@ bool PassesPremiumDiscount(int side)
 }
 
 //+------------------------------------------------------------------+
+bool ShouldExecuteOrder()
+{
+   bool tester = (bool)MQLInfoInteger(MQL_TESTER);
+   if(tester && ExecuteOrdersInTester)
+      return true;
+   return (!PaperMode && AllowLiveTrading);
+}
+
+//+------------------------------------------------------------------+
 void OpenTradeOrPaper(string setup, int side, double entry, double sl, double tp, double risk, double atr, int spread, double sweptLevel, double sweepExtreme)
 {
    string sideName = side == 1 ? "long" : "short";
    string note = StringFormat("swept=%.5f extreme=%.5f", sweptLevel, sweepExtreme);
    LogEvent("SIGNAL", setup, sideName, entry, sl, tp, atr, spread, 0.0, note);
 
-   if(PaperMode || !AllowLiveTrading)
+   if(!ShouldExecuteOrder())
    {
       paper.active = true;
       paper.side = side;
@@ -417,7 +428,7 @@ void OpenTradeOrPaper(string setup, int side, double entry, double sl, double tp
 
    bool ok = side == 1 ? trade.Buy(lots, TradeSymbol, entry, sl, tp, setup)
                        : trade.Sell(lots, TradeSymbol, entry, sl, tp, setup);
-   LogEvent(ok ? "LIVE_ORDER" : "LIVE_ERROR", setup, sideName, entry, sl, tp, atr, spread, 0.0, ok ? "order_sent" : trade.ResultRetcodeDescription());
+   LogEvent(ok ? "ORDER_SENT" : "ORDER_ERROR", setup, sideName, entry, sl, tp, atr, spread, 0.0, ok ? "order_sent" : trade.ResultRetcodeDescription());
 }
 
 //+------------------------------------------------------------------+
@@ -625,7 +636,7 @@ void LogEvent(string eventType, string setup, string side, double entry, double 
       FileClose(h);
    }
 
-   if(DebugSignals || eventType == "LIVE_ERROR")
+   if(DebugSignals || eventType == "ORDER_ERROR")
       Print(eventType, " ", setup, " ", side, " ", TradeSymbol, " R=", DoubleToString(resultR, 4), " ", note);
 }
 //+------------------------------------------------------------------+
