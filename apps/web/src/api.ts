@@ -15,6 +15,7 @@ export const api = {
     return req('/api/upload', { method: 'POST', body: fd })
   },
   catalog: () => req('/api/catalog'),
+  strategyUniverse: () => req('/api/strategy-universe'),
   jobs: () => req('/api/jobs'),
   clearCompletedJobs: () => req('/api/jobs/completed', { method: 'DELETE' }),
   startImport: () => req('/api/jobs/import', { method: 'POST' }),
