@@ -24,12 +24,6 @@ DEEP_MAX_BARS = {"M1": 60000, "M5": 90000, "M15": 120000, "M30": 160000, "H1": 2
 
 
 def _concepts(tf: str, mode: str) -> list[str]:
-    """Research concept universe.
-
-    quick = fast sanity check.
-    balanced = actual multi-concept discovery across market inefficiency families.
-    broad/deep/exhaustive = full concept catalogue.
-    """
     if mode == "quick":
         core = ["sweep_reclaim", "compression_breakout", "breakout_trend"]
         if tf in ["H1", "H4", "D1", "M30"]:
@@ -108,6 +102,114 @@ def _empty_result(name: str, out, datasets: list[dict], logger: Callable[[str], 
     return {"scan_name": name, "datasets": len(datasets), "tested_edges": 0, "candidates": 0, "rejected": 0, "mode": "empty", "active_concepts_tested": [], "warning": reason}
 
 
+def _cost_arrays(df: pd.DataFrame, symbol: str, risk: np.ndarray, spread_mult: float = 1.0, slippage_mult: float = 1.0) -> tuple[np.ndarray, np.ndarray, str]:
+    prof = qc.symbol_profile(symbol)
+    point_size = float(prof.get("point_size", 0.00001))
+    default_spread = float(prof.get("default_spread_points", 20))
+    default_slippage = float(prof.get("default_slippage_points", 2)) * slippage_mult
+    commission_r = float(prof.get("commission_r", 0.0))
+    default_cost_r = float(prof.get("default_cost_r", 0.04))
+
+    if "spread_points" in df.columns:
+        spread_points = pd.to_numeric(df["spread_points"], errors="coerce").to_numpy(dtype=float)
+        spread_points = np.where(np.isfinite(spread_points) & (spread_points > 0), spread_points, default_spread)
+        source = "data"
+    else:
+        spread_points = np.full(len(df), default_spread, dtype=float)
+        source = "profile_default"
+
+    safe_risk = np.where(np.isfinite(risk) & (risk > 0), risk, np.nan)
+    cost_r = (spread_points * point_size * spread_mult + default_slippage * point_size) / safe_risk + commission_r
+    cost_r = np.where(np.isfinite(cost_r), cost_r, default_cost_r)
+    if source == "profile_default":
+        cost_r = np.maximum(cost_r, default_cost_r)
+    cost_r = np.maximum(cost_r, 0.0)
+    return cost_r, spread_points * spread_mult, source
+
+
+def _backtest_event_driven(df: pd.DataFrame, buy: pd.Series, sell: pd.Series, rr: float, slm: float, horizon: int, symbol: str) -> pd.DataFrame:
+    """Fast event-driven equivalent of qc.backtest for discovery.
+
+    The old implementation walked every candle for every parameter combination. This walks only signal bars
+    and skips overlapping signals after a trade exits. That is the main speed difference between a usable
+    research scan and a brute-force prototype.
+    """
+    n = len(df)
+    if n < 260:
+        return pd.DataFrame()
+
+    buy_a = np.asarray(buy.fillna(False), dtype=bool)
+    sell_a = np.asarray(sell.fillna(False), dtype=bool)
+    signal_idx = np.flatnonzero(buy_a | sell_a)
+    signal_idx = signal_idx[(signal_idx >= 250) & (signal_idx < n - 2)]
+    if len(signal_idx) == 0:
+        return pd.DataFrame()
+
+    open_a = df.open.to_numpy(dtype=float)
+    high_a = df.high.to_numpy(dtype=float)
+    low_a = df.low.to_numpy(dtype=float)
+    close_a = df.close.to_numpy(dtype=float)
+    atr_a = df.atr14.to_numpy(dtype=float)
+    time_a = pd.to_datetime(df.time).to_numpy()
+    year_a = pd.to_datetime(df.time).dt.year.to_numpy(dtype=int)
+    month_a = pd.to_datetime(df.time).dt.month.to_numpy(dtype=int)
+
+    risk_a = atr_a * float(slm)
+    cost_a, spread_points_a, cost_source = _cost_arrays(df, symbol, risk_a)
+
+    trades: list[dict] = []
+    last_exit = -1
+    for i in signal_idx:
+        if i <= last_exit:
+            continue
+        side = 1 if buy_a[i] else -1
+        ei = int(i + 1)
+        if ei >= n:
+            continue
+        entry = float(open_a[ei])
+        risk = float(risk_a[i])
+        if not np.isfinite(risk) or risk <= 0:
+            continue
+        sl = entry - side * risk
+        tp = entry + side * risk * float(rr)
+        end_limit = min(ei + int(horizon), n - 1)
+        R = None
+        exit_reason = "timeout"
+        exit_price = float(close_a[end_limit])
+        cost_r = float(cost_a[ei]) if ei < len(cost_a) else 0.04
+
+        for j in range(ei, end_limit + 1):
+            hi = float(high_a[j]); lo = float(low_a[j])
+            hit_sl = lo <= sl if side == 1 else hi >= sl
+            hit_tp = hi >= tp if side == 1 else lo <= tp
+            if hit_sl and hit_tp:
+                R = -1 - cost_r; end_limit = j; exit_reason = "ambiguous_sl_first"; exit_price = sl; break
+            if hit_sl:
+                R = -1 - cost_r; end_limit = j; exit_reason = "sl"; exit_price = sl; break
+            if hit_tp:
+                R = float(rr) - cost_r; end_limit = j; exit_reason = "tp"; exit_price = tp; break
+        if R is None:
+            exit_price = float(close_a[end_limit])
+            R = side * (exit_price - entry) / risk - cost_r
+
+        entry_ts = pd.Timestamp(time_a[ei])
+        exit_ts = pd.Timestamp(time_a[end_limit])
+        trades.append({
+            "signal_index": int(i), "entry_index": int(ei), "exit_index": int(end_limit),
+            "entry_time": str(entry_ts), "exit_time": str(exit_ts), "side": "long" if side == 1 else "short",
+            "entry_price": round(entry, 8), "exit_price": round(float(exit_price), 8),
+            "sl": round(float(sl), 8), "tp": round(float(tp), 8), "atr14": round(float(atr_a[i]), 8),
+            "risk_price": round(float(risk), 8), "rr": float(rr), "sl_mult": float(slm),
+            "horizon_bars": int(horizon), "bars_held": int(end_limit - ei), "exit_reason": exit_reason,
+            "spread_points_used": round(float(spread_points_a[ei]), 3) if ei < len(spread_points_a) else 0.0,
+            "cost_r": round(float(cost_r), 6), "cost_source": cost_source, "R": float(round(R, 6)),
+            "year": int(year_a[ei]), "month": int(month_a[ei]),
+        })
+        last_exit = end_limit
+
+    return pd.DataFrame(trades)
+
+
 def discover_edges(name, mode="balanced", symbols="", tfs="", logger: Callable[[str], None] = print):
     if not qc.FEATURE_CATALOG_PATH.exists():
         raise RuntimeError("No feature catalog found. Run Build Features first.")
@@ -132,7 +234,7 @@ def discover_edges(name, mode="balanced", symbols="", tfs="", logger: Callable[[
     datasets: list[dict] = []
     broker = qc.load_broker_profile()
     started = time.time()
-    logger(f"{mode.title()} discovery started. datasets={len(cat)}")
+    logger(f"{mode.title()} discovery started. datasets={len(cat)}; engine=event_driven")
 
     if cat.empty:
         return _empty_result(name, out, datasets, logger, "No datasets matched selected mode/symbol/timeframe filters.")
@@ -159,6 +261,7 @@ def discover_edges(name, mode="balanced", symbols="", tfs="", logger: Callable[[
         tested_here = 0
         logger(f"[{ds_i}/{len(cat)}] Scanning {sym} {tf}: rows={len(df):,}, concepts={len(concepts)}, grid≈{total_grid}")
 
+        session_masks = {sess: qc.session_mask(df, sess) for sess in sessions}
         for concept in concepts:
             for lb in lbs:
                 try:
@@ -170,13 +273,16 @@ def discover_edges(name, mode="balanced", symbols="", tfs="", logger: Callable[[
                 if raw_events < min_tr:
                     continue
                 logger(f"  {concept} lb={lb}: raw_events={raw_events}")
-                for sess in sessions:
-                    sm = qc.session_mask(df, sess)
+                for sess, sm in session_masks.items():
+                    b_sess = b0 & sm
+                    s_sess = s0 & sm
+                    if int(b_sess.sum() + s_sess.sum()) < min_tr:
+                        continue
                     for rr in rrs:
                         for slm in slms:
                             tested_here += 1
                             try:
-                                tr = qc.backtest(df, b0 & sm, s0 & sm, rr, slm, qc.HORIZON.get(tf, 48), symbol=sym)
+                                tr = _backtest_event_driven(df, b_sess, s_sess, rr, slm, qc.HORIZON.get(tf, 48), symbol=sym)
                                 base = qc.st(tr)
                             except Exception as e:
                                 logger(f"    backtest error {concept} {sess} lb={lb} rr={rr} sl={slm}: {e}")
@@ -230,4 +336,4 @@ def discover_edges(name, mode="balanced", symbols="", tfs="", logger: Callable[[
     (out / "DISCOVERY_REPORT.md").write_text(report, encoding="utf-8")
     (out / "QUANTLAB_REPORT.md").write_text(report, encoding="utf-8")
     logger(f"{mode.title()} discovery complete: tested_edges={len(res)}, candidates={len(cand)}, elapsed={time.time() - started:.1f}s")
-    return {"scan_name": name, "datasets": len(datasets), "tested_edges": len(res), "candidates": len(cand), "rejected": len(rej), "mode": mode, "elapsed_sec": round(time.time() - started, 1), "active_concepts_tested": sorted(set(res.concept)) if not res.empty else []}
+    return {"scan_name": name, "datasets": len(datasets), "tested_edges": len(res), "candidates": len(cand), "rejected": len(rej), "mode": mode, "elapsed_sec": round(time.time() - started, 1), "active_concepts_tested": sorted(set(res.concept)) if not res.empty else [], "engine": "event_driven"}
