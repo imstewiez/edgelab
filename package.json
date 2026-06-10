@@ -1,0 +1,10 @@
+{
+  "name": "coreea-edgelab",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "dev:web": "cd apps/web && npm run dev",
+    "dev:engine": "cd apps/engine && uvicorn main:app --host 127.0.0.1 --port 8765 --reload",
+    "build:web": "cd apps/web && npm run build"
+  }
+}

@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Local market data / research outputs
+data/
+market_data/
+raw/
+cache/
+features/
+outputs/
+reports/
+*.duckdb
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+*.pkl
+*.pickle
+*.csv
+*.zip
+*.html
+*.log
+
+# Build output
+dist/
+build/
+.vite/
+coverage/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
