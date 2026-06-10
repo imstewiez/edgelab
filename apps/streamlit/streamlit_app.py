@@ -134,6 +134,8 @@ stress = read_csv(rd / "stage4_execution_stress.csv")
 mc = read_csv(rd / "stage5_monte_carlo.csv")
 portfolio = read_csv(rd / "stage7_portfolio_risk.csv")
 perm = read_csv(rd / "stage8_permutation_test.csv")
+final_shortlist = read_csv(rd / "FINAL_SHORTLIST.csv")
+strict_shortlist = read_csv(rd / "FINAL_SHORTLIST_STRICT.csv")
 incubation_all = read_csv(INCUBATION_TRACKER)
 incubation = incubation_all[incubation_all.scan_name.astype(str) == selected_run].copy() if not incubation_all.empty and "scan_name" in incubation_all.columns else incubation_all
 ineff = read_csv(rd / "inefficiency_lab.csv")
@@ -145,19 +147,51 @@ m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("All tests", len(all_edges))
 m2.metric("Candidates", len(candidates))
 m3.metric("Validation rows", len(validation))
-m4.metric("Stress rows", len(stress))
+m4.metric("Strict shortlist", len(strict_shortlist))
 m5.metric("Incubation rows", len(incubation))
 
 tabs = st.tabs(["Shortlist", "Coverage", "Inefficiencies", "Stage Tables", "Explain Stats"])
 
 with tabs[0]:
-    source = incubation if not incubation.empty else perm if not perm.empty else portfolio if not portfolio.empty else mc if not mc.empty else stress if not stress.empty else walkforward if not walkforward.empty else validation if not validation.empty else candidates
-    source = add_account_examples(source, account_size, risk_pct)
-    st.write("### Best current shortlist")
-    if source.empty:
-        st.info("No shortlist rows yet.")
+    if not strict_shortlist.empty:
+        source_name = "FINAL_SHORTLIST_STRICT"
+        source = strict_shortlist
+        st.success("Showing strict paper-forward shortlist. This excludes setups with weak/zero walk-forward survival.")
+    elif not final_shortlist.empty:
+        source_name = "FINAL_SHORTLIST"
+        source = final_shortlist
+        st.warning("Showing non-strict final shortlist. Run the strict reducer to filter by walk-forward/stress/permutation.")
+    elif not incubation.empty:
+        source_name = "Incubation"
+        source = incubation
+    elif not perm.empty:
+        source_name = "Permutation"
+        source = perm
+        st.warning("Showing raw permutation table because no FINAL_SHORTLIST_STRICT.csv exists yet.")
+    elif not portfolio.empty:
+        source_name = "Portfolio"
+        source = portfolio
+    elif not mc.empty:
+        source_name = "Monte Carlo"
+        source = mc
+    elif not stress.empty:
+        source_name = "Execution Stress"
+        source = stress
+    elif not walkforward.empty:
+        source_name = "Walk-forward"
+        source = walkforward
+    elif not validation.empty:
+        source_name = "Validation"
+        source = validation
     else:
-        show_cols = [c for c in ["setup_id", "symbol", "tf", "concept", "session", "pf", "test_pf", "score", "robustness_score", "wf_score", "stress_status", "mc_score", "portfolio_score", "permutation_score", "sumR", "real_sumR", "maxDD_R", "standalone_monthly_dd_R", "p95_dd_R", "paper_sumR", "paper_maxDD_R", "example_profit_eur", "example_dd_eur", "verdict", "paper_notes", "promotion_rule"] if c in source.columns]
+        source_name = "Candidates"
+        source = candidates
+    source = add_account_examples(source, account_size, risk_pct)
+    st.write(f"### Best current shortlist — {source_name}")
+    if source.empty:
+        st.info("No shortlist rows yet. Run tools\\run_final_shortlist.py --strict for this output run.")
+    else:
+        show_cols = [c for c in ["setup_id", "symbol", "tf", "concept", "session", "strict_pass", "final_rank_score", "gates_passed", "pf", "test_pf", "wf_pass_rate", "stress_pass_rate", "permutation_score", "sumR_percentile", "real_sumR", "maxDD_R", "p95_dd_R", "avg_abs_corr", "example_profit_eur", "example_dd_eur", "verdict", "paper_reason", "promotion_rule"] if c in source.columns]
         st.dataframe(source[show_cols].head(50), width="stretch", height=520)
         if "example_profit_eur" in source.columns or "example_dd_eur" in source.columns:
             st.success(f"Example uses account {fmt_money(account_size)} and {risk_pct:.1f}% risk/trade. 1R = {fmt_money(account_size * risk_pct / 100)}.")
@@ -191,8 +225,8 @@ with tabs[2]:
         st.plotly_chart(fig, width="stretch")
 
 with tabs[3]:
-    for name, df in [("Candidates", candidates), ("Validation", validation), ("Walk-forward", walkforward), ("Execution Stress", stress), ("Monte Carlo", mc), ("Portfolio", portfolio), ("Permutation", perm), ("Incubation", incubation)]:
-        with st.expander(name, expanded=name == "Candidates"):
+    for name, df in [("Strict Final Shortlist", strict_shortlist), ("Final Shortlist", final_shortlist), ("Candidates", candidates), ("Validation", validation), ("Walk-forward", walkforward), ("Execution Stress", stress), ("Monte Carlo", mc), ("Portfolio", portfolio), ("Permutation", perm), ("Incubation", incubation)]:
+        with st.expander(name, expanded=name == "Strict Final Shortlist"):
             if df.empty:
                 st.info(f"No {name} data yet.")
             else:
@@ -205,6 +239,9 @@ with tabs[4]:
 
 **R / Risk unit**  
 1R is one trade's planned risk. With your current example settings, **1R = {fmt_money(account_size * risk_pct / 100)}**.
+
+**Strict Shortlist**  
+This is the serious paper-forward list. It requires meaningful walk-forward survival, execution stress survival, permutation strength, decent PF and controlled drawdown.
 
 **Profit Factor (PF)**  
 PF = gross wins / gross losses. PF 1.00 means breakeven before hidden costs. PF 1.25+ can be interesting. PF 1.60+ is strong but may be overfit if sample size is small.
