@@ -30,7 +30,7 @@ from sensitivity import read_sensitivity, run_sensitivity
 from strategy_universe import get_strategy_universe
 from walkforward import read_walkforward, run_walkforward
 
-app = FastAPI(title="CoreEA EdgeLab v1 Engine", version="1.2.1-efficient-research-lab")
+app = FastAPI(title="CoreEA EdgeLab v1 Engine", version="1.2.2-quick-research-lab")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -46,7 +46,7 @@ jobs_lock = threading.Lock()
 PIPELINE_STEPS = [
     ("import", "Import raw data"),
     ("features", "Build feature cache"),
-    ("discover", "Efficient strategy discovery"),
+    ("discover", "Quick strategy discovery"),
     ("event_lab", "Event/feature/outcome lab"),
     ("validate", "Robustness validation"),
     ("walkforward", "Walk-forward matrix"),
@@ -103,17 +103,17 @@ def _safe_extract_zip(zip_path: Path, target_dir: Path) -> list[str]:
     return extracted
 
 
-def run_scan_only(name, mode="efficient", symbols="", tfs="", logger=print):
-    return run_fast_discovery(name=name, mode=mode or "efficient", symbols=symbols, tfs=tfs, logger=logger)
+def run_scan_only(name, mode="quick", symbols="", tfs="", logger=print):
+    return run_fast_discovery(name=name, mode=mode or "quick", symbols=symbols, tfs=tfs, logger=logger)
 
 
-def run_auto_discovery(mode="efficient", symbols="", tfs="", logger=print):
+def run_auto_discovery(mode="quick", symbols="", tfs="", logger=print):
     logger("Step 1/3: Importing data")
     import_raw_data(logger)
     logger("Step 2/3: Building features")
     build_features(logger)
-    logger("Step 3/3: Efficient discovery")
-    return run_scan_only(f"auto_discovery_{time.strftime('%Y%m%d_%H%M%S')}", mode="efficient" if mode in {"auto", "priority", ""} else mode, symbols=symbols, tfs=tfs, logger=logger)
+    logger("Step 3/3: Quick discovery")
+    return run_scan_only(f"auto_discovery_{time.strftime('%Y%m%d_%H%M%S')}", mode="quick" if mode in {"auto", "priority", "efficient", ""} else mode, symbols=symbols, tfs=tfs, logger=logger)
 
 
 def create_or_reuse_job(kind: str, lock_key: str, payload: Optional[dict] = None, steps: Optional[list[dict]] = None):
@@ -123,22 +123,7 @@ def create_or_reuse_job(kind: str, lock_key: str, payload: Optional[dict] = None
             jobs[existing]["logs"].append(f"[{time.strftime('%H:%M:%S')}] Duplicate click ignored. Existing job is already running.")
             return existing, True
         jid = str(uuid.uuid4())[:8]
-        jobs[jid] = {
-            "id": jid,
-            "kind": kind,
-            "lock_key": lock_key,
-            "status": "queued",
-            "created_at": now(),
-            "updated_at": now(),
-            "payload": payload or {},
-            "logs": [],
-            "result": None,
-            "error": None,
-            "reused": False,
-            "percent": 0,
-            "stage": "Queued",
-            "steps": steps or [],
-        }
+        jobs[jid] = {"id": jid, "kind": kind, "lock_key": lock_key, "status": "queued", "created_at": now(), "updated_at": now(), "payload": payload or {}, "logs": [], "result": None, "error": None, "reused": False, "percent": 0, "stage": "Queued", "steps": steps or []}
         job_locks[lock_key] = jid
         return jid, False
 
@@ -169,6 +154,20 @@ def update_pipeline_step(jid: str, step_id: str, status: str, percent: int, stag
         jobs[jid]["updated_at"] = now()
 
 
+def pipeline_logger(jid: str, step_id: str | None = None, base_pct: int | None = None, end_pct: int | None = None):
+    def _log(msg: str):
+        log_job(jid, msg)
+        if step_id == "discover" and base_pct is not None and end_pct is not None:
+            m = re.search(r"\[(\d+)/(\d+)\]", msg)
+            if m:
+                cur, total = int(m.group(1)), max(1, int(m.group(2)))
+                pct = base_pct + int((end_pct - base_pct) * min(cur, total) / total)
+                update_pipeline_step(jid, step_id, "running", pct, f"Quick discovery {cur}/{total}")
+            elif "complete" in msg.lower() or "cap reached" in msg.lower():
+                update_pipeline_step(jid, step_id, "running", end_pct, "Quick discovery finishing")
+    return _log
+
+
 def run_job(jid: str, fn, *args, **kwargs):
     update_job(jid, status="running", percent=5, stage="Running")
     lock_key = jobs.get(jid, {}).get("lock_key")
@@ -195,26 +194,26 @@ def start_locked(kind: str, lock_key: str, fn, payload: Optional[dict] = None, *
 def run_full_pipeline_job(jid: str, payload: dict):
     lock_key = jobs.get(jid, {}).get("lock_key")
     scan_name = payload.get("scan_name") or f"pipeline_{time.strftime('%Y%m%d_%H%M%S')}"
-    mode = payload.get("mode", "efficient")
-    if mode in {"auto", "priority", ""}:
-        mode = "efficient"
+    mode = payload.get("mode", "quick")
+    if mode in {"auto", "priority", "efficient", "fast", ""}:
+        mode = "quick"
     symbols = payload.get("symbols", "")
     tfs = payload.get("tfs", "")
     try:
-        update_job(jid, status="running", percent=1, stage="Starting efficient full pipeline")
+        update_job(jid, status="running", percent=1, stage="Starting quick full pipeline")
         steps = [
-            ("import", 5, lambda: import_raw_data(lambda m: log_job(jid, m))),
-            ("features", 12, lambda: build_features(lambda m: log_job(jid, m))),
-            ("discover", 24, lambda: run_scan_only(scan_name, mode=mode, symbols=symbols, tfs=tfs, logger=lambda m: log_job(jid, m))),
-            ("event_lab", 32, lambda: run_event_lab(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("validate", 42, lambda: run_validation(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("walkforward", 52, lambda: run_walkforward(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("stress", 62, lambda: run_execution_stress(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("monte_carlo", 72, lambda: run_monte_carlo(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("sensitivity", 82, lambda: run_sensitivity(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("portfolio", 90, lambda: run_portfolio_risk(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("permutation", 97, lambda: run_permutation_test(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("incubation", 100, lambda: seed_incubation(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
+            ("import", 5,  lambda: import_raw_data(pipeline_logger(jid))),
+            ("features", 12, lambda: build_features(pipeline_logger(jid))),
+            ("discover", 28, lambda: run_scan_only(scan_name, mode=mode, symbols=symbols, tfs=tfs, logger=pipeline_logger(jid, "discover", 13, 28))),
+            ("event_lab", 36, lambda: run_event_lab(scan_name=scan_name, logger=pipeline_logger(jid))),
+            ("validate", 45, lambda: run_validation(scan_name=scan_name, logger=pipeline_logger(jid))),
+            ("walkforward", 55, lambda: run_walkforward(scan_name=scan_name, logger=pipeline_logger(jid))),
+            ("stress", 65, lambda: run_execution_stress(scan_name=scan_name, logger=pipeline_logger(jid))),
+            ("monte_carlo", 75, lambda: run_monte_carlo(scan_name=scan_name, logger=pipeline_logger(jid))),
+            ("sensitivity", 84, lambda: run_sensitivity(scan_name=scan_name, logger=pipeline_logger(jid))),
+            ("portfolio", 92, lambda: run_portfolio_risk(scan_name=scan_name, logger=pipeline_logger(jid))),
+            ("permutation", 98, lambda: run_permutation_test(scan_name=scan_name, logger=pipeline_logger(jid))),
+            ("incubation", 100, lambda: seed_incubation(scan_name=scan_name, logger=pipeline_logger(jid))),
         ]
         result = {"scan_name": scan_name, "mode": mode}
         for step_id, pct, fn in steps:
@@ -235,14 +234,13 @@ def run_full_pipeline_job(jid: str, payload: dict):
 
 
 @app.on_event("startup")
-def startup():
-    ensure_store()
+def startup(): ensure_store()
 
 
 @app.get("/health")
 def health():
     ensure_store()
-    return {"ok": True, "version": "1.2.1-efficient-research-lab", "store": str(STORE.resolve()), "active_locks": job_locks}
+    return {"ok": True, "version": "1.2.2-quick-research-lab", "store": str(STORE.resolve()), "active_locks": job_locks}
 
 
 @app.get("/api/strategy-universe")
@@ -254,21 +252,16 @@ async def upload(files: List[UploadFile] = File(...)):
     ensure_store(); saved = []; errors = []
     for f in files:
         try:
-            filename = _safe_filename(f.filename)
-            suffix = Path(filename).suffix.lower()
+            filename = _safe_filename(f.filename); suffix = Path(filename).suffix.lower()
             if suffix not in {".csv", ".zip"}:
-                errors.append({"filename": f.filename, "error": "Only .csv and .zip files are supported."})
-                continue
+                errors.append({"filename": f.filename, "error": "Only .csv and .zip files are supported."}); continue
             dest = _dedupe_path(RAW_DIR / filename)
             with dest.open("wb") as out:
                 shutil.copyfileobj(f.file, out)
             item = {"filename": dest.name, "original_filename": f.filename, "relative_path": str(dest.relative_to(RAW_DIR)), "size": dest.stat().st_size, "type": suffix.replace(".", "")}
             if suffix == ".zip":
-                extract_dir = RAW_DIR / dest.stem
-                extract_dir.mkdir(parents=True, exist_ok=True)
-                extracted = _safe_extract_zip(dest, extract_dir)
-                item["extracted_to"] = str(extract_dir.relative_to(RAW_DIR))
-                item["extracted_csv_files"] = extracted
+                extract_dir = RAW_DIR / dest.stem; extract_dir.mkdir(parents=True, exist_ok=True)
+                extracted = _safe_extract_zip(dest, extract_dir); item["extracted_to"] = str(extract_dir.relative_to(RAW_DIR)); item["extracted_csv_files"] = extracted
             saved.append(item)
         except Exception as e:
             errors.append({"filename": f.filename, "error": str(e)})
@@ -278,11 +271,9 @@ async def upload(files: List[UploadFile] = File(...)):
 
 @app.get("/api/catalog")
 def catalog():
-    ensure_store()
-    raw_files = []
+    ensure_store(); raw_files = []
     for p in RAW_DIR.rglob("*"):
-        if p.is_file():
-            raw_files.append({"path": str(p.relative_to(RAW_DIR)), "size": p.stat().st_size, "modified_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p.stat().st_mtime))})
+        if p.is_file(): raw_files.append({"path": str(p.relative_to(RAW_DIR)), "size": p.stat().st_size, "modified_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p.stat().st_mtime))})
     return {"raw_files": raw_files, "datasets": list_catalog(), "features": list_feature_catalog(), "data_health": read_data_health()}
 
 
@@ -292,15 +283,15 @@ def job_import(): return start_locked("import", "import", import_raw_data)
 def job_features(): return start_locked("features", "features", build_features)
 @app.post("/api/jobs/discover")
 def job_discover(payload: Dict[str, Any] | None = None):
-    payload = payload or {}; mode = payload.get("mode", "efficient"); symbols = payload.get("symbols", ""); tfs = payload.get("tfs", "")
+    payload = payload or {}; mode = payload.get("mode", "quick"); symbols = payload.get("symbols", ""); tfs = payload.get("tfs", "")
     return start_locked("auto_discovery", f"discover:{mode}:{symbols}:{tfs}", run_auto_discovery, payload, mode=mode, symbols=symbols, tfs=tfs)
 @app.post("/api/jobs/scan")
 def job_scan(payload: Dict[str, Any]):
-    mode = payload.get("mode", "efficient"); name = payload.get("name") or f"scan_{mode}_{time.strftime('%Y%m%d_%H%M%S')}"
+    mode = payload.get("mode", "quick"); name = payload.get("name") or f"scan_{mode}_{time.strftime('%Y%m%d_%H%M%S')}"
     return start_locked("scan", f"scan:{mode}", run_scan_only, payload, name=name, mode=mode, symbols=payload.get("symbols", ""), tfs=payload.get("tfs", ""))
 @app.post("/api/jobs/full-pipeline")
 def job_full_pipeline(payload: Dict[str, Any] | None = None):
-    payload = payload or {}; payload.setdefault("mode", "efficient"); jid, reused = create_or_reuse_job("full_pipeline", "full_pipeline", payload, _empty_steps())
+    payload = payload or {}; payload.setdefault("mode", "quick"); jid, reused = create_or_reuse_job("full_pipeline", "full_pipeline", payload, _empty_steps())
     if reused: return {"job_id": jid, "reused": True, "message": "Full pipeline already running."}
     threading.Thread(target=run_full_pipeline_job, args=(jid, payload), daemon=True).start()
     return {"job_id": jid, "reused": False, "message": "Full pipeline started."}
@@ -344,8 +335,7 @@ def job_seed_incubation(payload: Dict[str, Any] | None = None):
 
 @app.get("/api/jobs")
 def get_jobs():
-    with jobs_lock:
-        return sorted(jobs.values(), key=lambda x: x["created_at"], reverse=True)
+    with jobs_lock: return sorted(jobs.values(), key=lambda x: x["created_at"], reverse=True)
 @app.delete("/api/jobs/completed")
 def clear_completed_jobs():
     with jobs_lock:
@@ -392,8 +382,6 @@ def output_report(scan_name: str):
 def api_clean_outputs(): return clean_outputs()
 @app.get("/api/download/{scan_name}/{filename}")
 def download(scan_name: str, filename: str):
-    safe_scan = _safe_filename(scan_name)
-    safe_file = _safe_filename(filename)
-    p = OUTPUTS_DIR / safe_scan / safe_file
+    safe_scan = _safe_filename(scan_name); safe_file = _safe_filename(filename); p = OUTPUTS_DIR / safe_scan / safe_file
     if not p.exists(): return JSONResponse(status_code=404, content={"error": "file not found"})
     return FileResponse(str(p), filename=safe_file)
