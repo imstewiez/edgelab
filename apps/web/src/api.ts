@@ -16,6 +16,8 @@ export const api = {
   },
   catalog: () => req('/api/catalog'),
   strategyUniverse: () => req('/api/strategy-universe'),
+  validation: (scan?: string) => req(`/api/validation${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
+  validate: (payload: any = {}) => req('/api/jobs/validate', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
   jobs: () => req('/api/jobs'),
   clearCompletedJobs: () => req('/api/jobs/completed', { method: 'DELETE' }),
   startImport: () => req('/api/jobs/import', { method: 'POST' }),
