@@ -10,6 +10,7 @@ from quantlab_core import (
     run_auto_discovery, run_scan_only, list_catalog, list_feature_catalog,
     list_outputs, read_edges_preview, read_report, read_edge_cards, read_data_health, clean_outputs
 )
+from strategy_universe import get_strategy_universe
 
 app = FastAPI(title='CoreEA EdgeLab v1 Engine', version='1.0.0-production-candidate')
 app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173','http://127.0.0.1:5173'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
@@ -67,6 +68,9 @@ def startup(): ensure_store()
 def health():
     ensure_store()
     return {'ok': True, 'version': '1.0.0-production-candidate', 'store': str(STORE.resolve()), 'active_locks': job_locks}
+
+@app.get('/api/strategy-universe')
+def strategy_universe(): return get_strategy_universe()
 
 @app.post('/api/upload')
 async def upload(files: List[UploadFile] = File(...)):
