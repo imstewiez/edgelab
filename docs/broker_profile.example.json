@@ -1,0 +1,20 @@
+{
+  "name": "my_mt5_broker_profile",
+  "description": "Copy this to data/broker_profile.json and tune it with your broker's real symbols, spread, commission and slippage assumptions.",
+  "default_cost_r": 0.04,
+  "default_spread_points": 20,
+  "default_slippage_points": 2,
+  "commission_r": 0.0,
+  "symbols": {
+    "XAUUSD": {
+      "point_size": 0.01,
+      "default_spread_points": 25,
+      "default_slippage_points": 8
+    },
+    "EURUSD": {
+      "point_size": 0.00001,
+      "default_spread_points": 12,
+      "default_slippage_points": 2
+    }
+  }
+}
