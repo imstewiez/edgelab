@@ -8,7 +8,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from quantlab_core import OUTPUTS_DIR
+from quantlab_core import OUTPUTS_DIR, row_setup_id
 
 VALIDATION_PATH = OUTPUTS_DIR / "latest_validation.json"
 
@@ -107,14 +107,17 @@ def _validate_row(row: dict) -> dict:
     ea_reason = "Not EA-ready yet: still needs true walk-forward, slippage/spread stress, Monte Carlo and forward paper tracking."
 
     return {
+        "setup_id": row.get("setup_id") or row_setup_id(row),
         "symbol": row.get("symbol", ""),
         "tf": row.get("tf", ""),
         "concept": row.get("concept", ""),
+        "lookback": row.get("lookback", ""),
         "session": row.get("session", ""),
         "rr": row.get("rr", ""),
         "sl_mult": row.get("sl_mult", ""),
         "grade": row.get("grade", ""),
         "trades": n,
+        "n": n,
         "pf": pf,
         "test_pf": test_pf,
         "expR": exp_r,
@@ -122,6 +125,8 @@ def _validate_row(row: dict) -> dict:
         "winrate": winrate,
         "positive_month_pct": positive_month_pct,
         "loss_streak": loss_streak,
+        "max_loss_streak": loss_streak,
+        "avg_cost_R": _num(row.get("avg_cost_R"), 0),
         "stress_pf": stress_pf,
         "stress_test_pf": stress_test_pf,
         "stress_expR": stress_exp_r,
@@ -154,8 +159,7 @@ def run_validation(scan_name: str | None = None, logger: Callable[[str], None] =
     watch = df[df.robustness_status == "watchlist"] if not df.empty else pd.DataFrame()
     not_robust = df[df.robustness_status == "not_robust"] if not df.empty else pd.DataFrame()
 
-    out_csv = run_dir / "stage2_validation.csv"
-    df.to_csv(out_csv, index=False)
+    df.to_csv(run_dir / "stage2_validation.csv", index=False)
 
     summary = {
         "scan_name": run_dir.name,
@@ -182,12 +186,4 @@ def read_validation(scan_name: str | None = None):
             return json.loads(p.read_text(encoding="utf-8"))
     if VALIDATION_PATH.exists():
         return json.loads(VALIDATION_PATH.read_text(encoding="utf-8"))
-    return {
-        "candidates_checked": 0,
-        "robust_candidates": 0,
-        "watchlist": 0,
-        "not_robust": 0,
-        "ea_ready": 0,
-        "top": [],
-        "warning": "No validation run yet.",
-    }
+    return {"candidates_checked": 0, "robust_candidates": 0, "watchlist": 0, "not_robust": 0, "ea_ready": 0, "top": [], "warning": "No validation run yet."}
