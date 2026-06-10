@@ -18,15 +18,18 @@ from quantlab_core import (
     run_auto_discovery, run_scan_only, list_catalog, list_feature_catalog,
     list_outputs, read_edges_preview, read_report, read_edge_cards, read_data_health, clean_outputs,
 )
+from event_lab import read_event_lab, run_event_lab
 from execution_stress import read_execution_stress, run_execution_stress
+from incubation import export_ea_candidates, read_incubation, seed_incubation
 from monte_carlo import read_monte_carlo, run_monte_carlo
+from permutation_test import read_permutation_test, run_permutation_test
 from portfolio_risk import read_portfolio_risk, run_portfolio_risk
 from robustness import read_validation, run_validation
 from sensitivity import read_sensitivity, run_sensitivity
 from strategy_universe import get_strategy_universe
 from walkforward import read_walkforward, run_walkforward
 
-app = FastAPI(title="CoreEA EdgeLab v1 Engine", version="1.1.0-research-lab")
+app = FastAPI(title="CoreEA EdgeLab v1 Engine", version="1.2.0-research-lab")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -43,12 +46,15 @@ PIPELINE_STEPS = [
     ("import", "Import raw data"),
     ("features", "Build feature cache"),
     ("discover", "Discover strategy candidates"),
+    ("event_lab", "Event/feature/outcome lab"),
     ("validate", "Robustness validation"),
     ("walkforward", "Walk-forward matrix"),
     ("stress", "Broker-aware execution stress"),
     ("monte_carlo", "Monte Carlo robustness"),
     ("sensitivity", "Parameter sensitivity"),
     ("portfolio", "Portfolio/risk heat"),
+    ("permutation", "Permutation/randomization test"),
+    ("incubation", "Seed paper incubation"),
 ]
 
 
@@ -181,20 +187,23 @@ def run_full_pipeline_job(jid: str, payload: dict):
     try:
         update_job(jid, status="running", percent=1, stage="Starting full pipeline")
         steps = [
-            ("import", 7, lambda: import_raw_data(lambda m: log_job(jid, m))),
-            ("features", 18, lambda: build_features(lambda m: log_job(jid, m))),
-            ("discover", 34, lambda: run_scan_only(scan_name, mode=mode, symbols=symbols, tfs=tfs, logger=lambda m: log_job(jid, m))),
-            ("validate", 46, lambda: run_validation(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("walkforward", 58, lambda: run_walkforward(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("stress", 70, lambda: run_execution_stress(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("monte_carlo", 82, lambda: run_monte_carlo(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("sensitivity", 92, lambda: run_sensitivity(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
-            ("portfolio", 100, lambda: run_portfolio_risk(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
+            ("import", 5, lambda: import_raw_data(lambda m: log_job(jid, m))),
+            ("features", 12, lambda: build_features(lambda m: log_job(jid, m))),
+            ("discover", 24, lambda: run_scan_only(scan_name, mode=mode, symbols=symbols, tfs=tfs, logger=lambda m: log_job(jid, m))),
+            ("event_lab", 32, lambda: run_event_lab(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
+            ("validate", 42, lambda: run_validation(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
+            ("walkforward", 52, lambda: run_walkforward(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
+            ("stress", 62, lambda: run_execution_stress(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
+            ("monte_carlo", 72, lambda: run_monte_carlo(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
+            ("sensitivity", 82, lambda: run_sensitivity(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
+            ("portfolio", 90, lambda: run_portfolio_risk(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
+            ("permutation", 97, lambda: run_permutation_test(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
+            ("incubation", 100, lambda: seed_incubation(scan_name=scan_name, logger=lambda m: log_job(jid, m))),
         ]
         result = {"scan_name": scan_name}
         for step_id, pct, fn in steps:
             label = next((x["label"] for x in jobs[jid]["steps"] if x["id"] == step_id), step_id)
-            update_pipeline_step(jid, step_id, "running", max(1, pct - 8), label)
+            update_pipeline_step(jid, step_id, "running", max(1, pct - 5), label)
             log_job(jid, f"Starting: {label}")
             result[step_id] = fn()
             update_pipeline_step(jid, step_id, "completed", pct, label)
@@ -217,7 +226,7 @@ def startup():
 @app.get("/health")
 def health():
     ensure_store()
-    return {"ok": True, "version": "1.1.0-research-lab", "store": str(STORE.resolve()), "active_locks": job_locks}
+    return {"ok": True, "version": "1.2.0-research-lab", "store": str(STORE.resolve()), "active_locks": job_locks}
 
 
 @app.get("/api/strategy-universe")
@@ -279,6 +288,10 @@ def job_full_pipeline(payload: Dict[str, Any] | None = None):
     if reused: return {"job_id": jid, "reused": True, "message": "Full pipeline already running."}
     threading.Thread(target=run_full_pipeline_job, args=(jid, payload), daemon=True).start()
     return {"job_id": jid, "reused": False, "message": "Full pipeline started."}
+@app.post("/api/jobs/event-lab")
+def job_event_lab(payload: Dict[str, Any] | None = None):
+    payload = payload or {}; scan_name = payload.get("scan_name") or None
+    return start_locked("stage1b_event_lab", f"event_lab:{scan_name or 'latest'}", run_event_lab, payload, scan_name=scan_name)
 @app.post("/api/jobs/validate")
 def job_validate(payload: Dict[str, Any] | None = None):
     payload = payload or {}; scan_name = payload.get("scan_name") or None
@@ -303,6 +316,14 @@ def job_sensitivity(payload: Dict[str, Any] | None = None):
 def job_portfolio_risk(payload: Dict[str, Any] | None = None):
     payload = payload or {}; scan_name = payload.get("scan_name") or None
     return start_locked("stage7_portfolio_risk", f"portfolio_risk:{scan_name or 'latest'}", run_portfolio_risk, payload, scan_name=scan_name)
+@app.post("/api/jobs/permutation-test")
+def job_permutation_test(payload: Dict[str, Any] | None = None):
+    payload = payload or {}; scan_name = payload.get("scan_name") or None
+    return start_locked("stage8_permutation_test", f"permutation:{scan_name or 'latest'}", run_permutation_test, payload, scan_name=scan_name)
+@app.post("/api/jobs/seed-incubation")
+def job_seed_incubation(payload: Dict[str, Any] | None = None):
+    payload = payload or {}; scan_name = payload.get("scan_name") or None
+    return start_locked("stage9_seed_incubation", f"incubation:{scan_name or 'latest'}", seed_incubation, payload, scan_name=scan_name)
 
 
 @app.get("/api/jobs")
@@ -323,6 +344,8 @@ def outputs(): return list_outputs()
 def edge_cards(): return read_edge_cards()
 @app.get("/api/data-health")
 def data_health(): return read_data_health()
+@app.get("/api/event-lab")
+def event_lab(scan_name: str | None = None): return read_event_lab(scan_name)
 @app.get("/api/validation")
 def validation(scan_name: str | None = None): return read_validation(scan_name)
 @app.get("/api/walkforward")
@@ -335,6 +358,13 @@ def monte_carlo(scan_name: str | None = None): return read_monte_carlo(scan_name
 def sensitivity(scan_name: str | None = None): return read_sensitivity(scan_name)
 @app.get("/api/portfolio-risk")
 def portfolio_risk(scan_name: str | None = None): return read_portfolio_risk(scan_name)
+@app.get("/api/permutation-test")
+def permutation_test(scan_name: str | None = None): return read_permutation_test(scan_name)
+@app.get("/api/incubation")
+def incubation(scan_name: str | None = None): return read_incubation(scan_name)
+@app.post("/api/ea/export")
+def ea_export(payload: Dict[str, Any] | None = None):
+    payload = payload or {}; return export_ea_candidates(payload.get("scan_name") or None)
 @app.get("/api/outputs/{scan_name}/edges")
 def output_edges(scan_name: str, kind: str = "candidate", limit: int = 100): return read_edges_preview(scan_name, kind, limit)
 @app.get("/api/outputs/{scan_name}/report")
