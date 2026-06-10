@@ -1,97 +1,135 @@
-import React, { useEffect, useState } from 'react'
-import { Activity, AlertTriangle, CheckCircle2, Database, FlaskConical, Layers3, ShieldCheck, Upload, XCircle, Zap } from 'lucide-react'
+import React, { useEffect, useMemo, useState } from 'react'
+import { Activity, AlertTriangle, BarChart3, CheckCircle2, Database, FlaskConical, Play, RefreshCw, Upload, XCircle } from 'lucide-react'
 import { api } from './api'
 
-type Tab = 'run' | 'edges' | 'universe' | 'data' | 'logs'
-type Job = { id: string; kind: string; status: string; created_at?: string; updated_at?: string; logs?: string[]; error?: string }
+type View = 'pipeline' | 'data' | 'results'
+type Job = { id: string; kind: string; status: string; percent?: number; stage?: string; steps?: any[]; created_at?: string; updated_at?: string; logs?: string[]; error?: string; result?: any }
 
 const label = (v: string) => String(v || '').replaceAll('_', ' ').replace(/\b\w/g, s => s.toUpperCase())
 const Card = ({ children, className = '' }: any) => <div className={`card ${className}`}>{children}</div>
-const Button = ({ children, busy, disabled, className = '', ...props }: any) => <button className={`btn ${className}`} disabled={busy || disabled} {...props}>{busy ? 'Working...' : children}</button>
-const Stat = ({ label: l, value, tone = '', icon }: any) => <Card><div className={`metric ${tone}`}>{icon}<div><p>{l}</p><strong>{value}</strong></div></div></Card>
+const Button = ({ children, disabled, className = '', ...props }: any) => <button className={`btn ${className}`} disabled={disabled} {...props}>{children}</button>
+const Metric = ({ name, value, tone = '', icon }: any) => <Card><div className={`metric ${tone}`}>{icon}<div><p>{name}</p><strong>{value}</strong></div></div></Card>
 
-function MiniTable({ rows, columns }: { rows: any[], columns: string[] }) {
-  if (!rows?.length) return <div className="empty">Nothing here yet.</div>
-  return <div className="tableWrap compact"><table><thead><tr>{columns.map(c => <th key={c}>{label(c)}</th>)}</tr></thead><tbody>{rows.slice(0, 80).map((r, i) => <tr key={i}>{columns.map(c => <td key={c}>{String(r[c] ?? '')}</td>)}</tr>)}</tbody></table></div>
+function MiniTable({ rows, columns, tall = false }: { rows: any[], columns: string[], tall?: boolean }) {
+  if (!rows?.length) return <div className="empty">Ainda sem resultados nesta secção.</div>
+  return <div className={`tableWrap ${tall ? 'tall' : ''}`}><table><thead><tr>{columns.map(c => <th key={c}>{label(c)}</th>)}</tr></thead><tbody>{rows.slice(0, 120).map((r, i) => <tr key={i}>{columns.map(c => <td key={c}>{String(r[c] ?? '')}</td>)}</tr>)}</tbody></table></div>
 }
 
 export function App() {
-  const [tab, setTab] = useState<Tab>('run')
+  const [view, setView] = useState<View>('pipeline')
   const [health, setHealth] = useState<any>(null)
   const [catalog, setCatalog] = useState<any>({ raw_files: [], data_health: { datasets: [], summary: {} } })
   const [jobs, setJobs] = useState<Job[]>([])
   const [outputs, setOutputs] = useState<any[]>([])
-  const [universe, setUniverse] = useState<any>({ groups: {}, summary: {} })
+  const [selectedRun, setSelectedRun] = useState('')
   const [validation, setValidation] = useState<any>({ top: [] })
   const [walkforward, setWalkforward] = useState<any>({ top: [] })
   const [stress, setStress] = useState<any>({ top: [] })
-  const [mc, setMc] = useState<any>({ top: [], ea_ready: 0 })
+  const [mc, setMc] = useState<any>({ top: [] })
   const [sensitivity, setSensitivity] = useState<any>({ top: [] })
   const [portfolio, setPortfolio] = useState<any>({ top: [] })
-  const [selectedOutput, setSelectedOutput] = useState('')
   const [candidateRows, setCandidateRows] = useState<any[]>([])
-  const [rejectedRows, setRejectedRows] = useState<any[]>([])
-  const [busy, setBusy] = useState('')
-  const [notice, setNotice] = useState('Ready.')
+  const [allRows, setAllRows] = useState<any[]>([])
+  const [notice, setNotice] = useState('Pronto.')
   const [uploadState, setUploadState] = useState('')
+  const [busy, setBusy] = useState(false)
 
   const activeJob = jobs.find(j => ['queued', 'running'].includes(j.status))
   const latestJob = jobs[0]
-  const latestRun = outputs[0]
-  const currentRunName = selectedOutput || latestRun?.name
+  const currentRun = selectedRun || outputs[0]?.name || activeJob?.result?.scan_name || ''
+  const progress = Math.max(0, Math.min(100, Number(activeJob?.percent ?? (latestJob?.status === 'completed' ? 100 : 0))))
+  const lastLog = activeJob?.logs?.slice(-1)[0] || latestJob?.logs?.slice(-1)[0] || notice
+  const healthSummary = catalog?.data_health?.summary || {}
+  const rawFiles = Array.isArray(catalog?.raw_files) ? catalog.raw_files : []
 
-  async function refreshAll(runName = currentRunName) {
+  async function refresh(runName = currentRun) {
     try { setHealth(await api.health()) } catch {}
     try { setCatalog(await api.catalog()) } catch {}
     try { setJobs(await api.jobs()) } catch {}
-    try { setOutputs(await api.outputs()) } catch {}
-    try { setUniverse(await api.strategyUniverse()) } catch {}
-    try { setValidation(await api.validation(runName)) } catch {}
-    try { setWalkforward(await api.walkforward(runName)) } catch {}
-    try { setStress(await api.executionStress(runName)) } catch {}
-    try { setMc(await api.monteCarlo(runName)) } catch {}
-    try { setSensitivity(await api.sensitivity(runName)) } catch {}
-    try { setPortfolio(await api.portfolioRisk(runName)) } catch {}
+    try { const outs = await api.outputs(); setOutputs(outs); if (!selectedRun && outs?.[0]?.name) runName = outs[0].name } catch {}
+    if (runName) {
+      await Promise.allSettled([
+        api.validation(runName).then(setValidation),
+        api.walkforward(runName).then(setWalkforward),
+        api.executionStress(runName).then(setStress),
+        api.monteCarlo(runName).then(setMc),
+        api.sensitivity(runName).then(setSensitivity),
+        api.portfolioRisk(runName).then(setPortfolio),
+        api.edges(runName, 'candidate').then(r => setCandidateRows(r.rows || [])),
+        api.edges(runName, 'all').then(r => setAllRows(r.rows || [])),
+      ])
+    }
   }
 
-  useEffect(() => { refreshAll(); const t = setInterval(() => refreshAll(), 2000); return () => clearInterval(t) }, [currentRunName])
-  useEffect(() => { if (outputs.length && (!selectedOutput || !outputs.find(o => o.name === selectedOutput))) setSelectedOutput(outputs[0].name) }, [outputs])
-  useEffect(() => {
-    if (!selectedOutput) return
-    api.edges(selectedOutput, 'candidate').then(r => setCandidateRows(r.rows || [])).catch(() => setCandidateRows([]))
-    api.edges(selectedOutput, 'rejected').then(r => setRejectedRows(r.rows || [])).catch(() => setRejectedRows([]))
-    refreshAll(selectedOutput)
-  }, [selectedOutput])
+  useEffect(() => { refresh(); const t = setInterval(() => refresh(), 1500); return () => clearInterval(t) }, [selectedRun])
+  useEffect(() => { if (!selectedRun && outputs?.[0]?.name) setSelectedRun(outputs[0].name) }, [outputs, selectedRun])
 
-  async function run(name: string, fn: () => Promise<any>, next: Tab = 'logs') {
-    if (activeJob || busy) { setNotice('Already running. Extra click ignored.'); return }
-    setBusy(name); setNotice(`${name} started.`)
-    try { const r = await fn(); setNotice(r?.message || `${name} queued.`); setTab(next); await refreshAll() }
-    catch (e: any) { setNotice(`Error: ${e.message}`) }
-    finally { setTimeout(() => setBusy(''), 800) }
+  async function startFullPipeline() {
+    if (activeJob || busy) return
+    setBusy(true); setNotice('A iniciar pipeline completo...')
+    try { const r = await api.fullPipeline({ mode: 'priority' }); setNotice(r.message || 'Pipeline iniciado.'); setView('pipeline'); await refresh() }
+    catch (e: any) { setNotice(`Erro: ${e.message}`) }
+    finally { setBusy(false) }
   }
 
-  const healthSummary = catalog?.data_health?.summary || {}
-  const healthRows = catalog?.data_health?.datasets || []
-  const cleanOutputs = outputs.map(o => ({ run: o.name, candidates: o.candidate_count, screened: o.all_count, sensitivity: o.has_sensitivity ? 'yes' : 'no', portfolio: o.has_portfolio_risk ? 'yes' : 'no' }))
+  async function runStep(name: string, fn: () => Promise<any>) {
+    if (activeJob || busy) return
+    setBusy(true); setNotice(`${name} iniciado...`)
+    try { const r = await fn(); setNotice(r.message || `${name} em execução.`); await refresh() }
+    catch (e: any) { setNotice(`Erro: ${e.message}`) }
+    finally { setBusy(false) }
+  }
 
-  return <div className="app"><aside className="sidebar"><div className="brand"><div className="logo"><FlaskConical size={24}/></div><div><strong>CoreEA EdgeLab</strong><span>Quant lab</span></div></div>{[['run', Zap, 'Run'], ['edges', CheckCircle2, 'Edges'], ['universe', Layers3, 'Universe'], ['data', Database, 'Data'], ['logs', Activity, 'Logs']].map(([id, Icon, txt]: any) => <button key={id} className={tab === id ? 'nav active' : 'nav'} onClick={() => setTab(id)}><Icon size={18}/>{txt}</button>)}<div className="sideFooter"><ShieldCheck size={16}/><span>Local data. No paid DB.</span></div></aside><main className="main"><header className="topbar"><div><h1>{pageTitle(tab)}</h1><p>{pageSub(tab)}</p></div><Button onClick={() => refreshAll()}>Refresh</Button></header><div className={`status ${activeJob ? 'running' : ''}`}><strong>{activeJob ? `${label(activeJob.kind)} running` : 'Status'}</strong><span>{activeJob ? (activeJob.logs?.slice(-1)[0] || activeJob.status) : notice}</span></div>
-    {tab === 'run' && <section className="grid"><Stat label="Engine" value={health?.ok ? 'Online' : 'Offline'} icon={<Activity/>} tone={health?.ok ? 'good' : 'bad'} /><Stat label="Candidates" value={latestRun?.candidate_count ?? 0} icon={<CheckCircle2/>} tone="good" /><Stat label="Sensitivity Pass" value={sensitivity?.sensitivity_pass ?? 0} icon={<ShieldCheck/>} tone="good" /><Stat label="Portfolio Pass" value={portfolio?.portfolio_pass ?? 0} icon={<ShieldCheck/>} tone="warn" /><Card className="wide primaryPanel"><div><h2>Discovery → Validation → Walk-forward → Stress → Monte Carlo → Sensitivity → Portfolio</h2><p>Phase 1/2 pipeline uses setup IDs, broker-aware costs and full validation handoffs. EA-ready remains locked at 0 until forward paper tracking and broker execution checks pass.</p></div><PipelineButtons run={run} activeJob={activeJob} latestRun={latestRun} currentRunName={currentRunName}/></Card><Card className="wide"><h2>Pipeline status</h2>{latestRun ? <div className="summaryGrid"><div><strong>{latestRun.all_count}</strong><span>Screened</span></div><div><strong>{walkforward?.wf_pass || 0}</strong><span>WF pass</span></div><div><strong>{stress?.stress_pass || 0}</strong><span>Stress pass</span></div><div><strong>{mc?.mc_pass || 0}</strong><span>MC pass</span></div><div><strong>{sensitivity?.sensitivity_pass || 0}</strong><span>Sensitivity pass</span></div><div><strong>{portfolio?.portfolio_pass || 0}</strong><span>Portfolio pass</span></div><div><strong>{portfolio?.portfolio_monthly_dd_R ?? '-'}</strong><span>Portfolio DD R</span></div><div><strong>{portfolio?.avg_pair_corr ?? '-'}</strong><span>Avg pair corr</span></div></div> : <div className="empty">No run yet. Click Discover.</div>}</Card><Card className="wide"><h2>Portfolio leaders</h2><PortfolioList rows={portfolio?.top || []} /></Card><Card className="wide"><h2>Sensitivity leaders</h2><SensitivityList rows={sensitivity?.top || []} /></Card></section>}
-    {tab === 'edges' && <section className="grid"><Card className="wide"><h2>Choose run</h2><select value={selectedOutput} onChange={e => setSelectedOutput(e.target.value)}><option value="">Select run</option>{outputs.map(o => <option key={o.name} value={o.name}>{o.name} — {o.candidate_count} candidates / {o.all_count} screened</option>)}</select><PipelineButtons run={run} activeJob={activeJob} latestRun={selectedOutput} currentRunName={selectedOutput}/></Card><Stage title="Stage 7 portfolio/risk heat" summary={portfolio} keys={['candidates_checked','portfolio_pass','portfolio_watchlist','portfolio_monthly_dd_R']} warning={portfolio?.warning}><PortfolioList rows={portfolio?.top || []}/></Stage><Stage title="Stage 6 parameter sensitivity" summary={sensitivity} keys={['candidates_checked','sensitivity_pass','sensitivity_watchlist','sensitivity_fail']} warning={sensitivity?.warning}><SensitivityList rows={sensitivity?.top || []}/></Stage><Stage title="Stage 5 Monte Carlo" summary={mc} keys={['candidates_checked','mc_pass','mc_watchlist','ea_ready']} warning={mc?.warning}><MonteCarloList rows={mc?.top || []}/></Stage><Card className="wide"><h2>Stage 4 execution stress</h2><StressList rows={stress?.top || []}/></Card><Card className="wide"><h2>Stage 3 walk-forward</h2><WalkForwardList rows={walkforward?.top || []}/></Card><Card className="wide"><h2>Stage 2 robustness</h2><ValidationList rows={validation?.top || []}/></Card><Card className="wide"><h2>Candidate ideas</h2><MiniTable rows={candidateRows} columns={['setup_id','symbol','tf','concept','session','lookback','rr','sl_mult','pf','test_pf','expR','maxDD_R','avg_cost_R','verdict']} /></Card><Card className="wide"><h2>Rejected ideas</h2><MiniTable rows={rejectedRows} columns={['symbol','tf','concept','pf','test_pf','expR','maxDD_R','positive_month_pct','verdict']} /></Card></section>}
-    {tab === 'universe' && <section className="grid"><Stat label="Concept Groups" value={universe.summary?.groups || 0} icon={<Layers3/>} /><Stat label="Total Concepts" value={universe.summary?.concepts || 0} icon={<FlaskConical/>} /><Stat label="Active Now" value={universe.summary?.active || 0} icon={<CheckCircle2/>} tone="good" /><Stat label="Need Tick/DOM" value={universe.summary?.requires_tick_or_dom || 0} icon={<AlertTriangle/>} tone="warn" /><Card className="wide"><h2>Strategy universe</h2><p>{universe.warning || 'Every concept is treated as a hypothesis until tested.'}</p><UniverseGroups universe={universe}/></Card></section>}
-    {tab === 'data' && <section className="grid"><Stat label="Good" value={healthSummary.good || 0} icon={<CheckCircle2/>} tone="good" /><Stat label="Usable" value={healthSummary.usable || 0} icon={<AlertTriangle/>} tone="warn" /><Stat label="Weak" value={healthSummary.weak || 0} icon={<XCircle/>} tone="bad" /><Stat label="Raw files" value={catalog.raw_files?.length || 0} icon={<Upload/>} /><Card className="wide"><h2>Upload data</h2><input className="file" type="file" multiple disabled={!!activeJob || !!busy} onChange={async e => { if (!e.target.files) return; setBusy('Upload'); setUploadState('Uploading...'); try { const r = await api.upload(e.target.files); setUploadState(`Uploaded ${r.saved?.length || 0} file(s).`); await refreshAll() } catch (err: any) { setUploadState(`Upload failed: ${err.message}`) } finally { setBusy('') } }}/><p>{uploadState || 'Upload MT5 CSV/ZIP exports here. Include spread/spread_points columns when possible.'}</p><Button disabled={!!activeJob} onClick={() => run('Import Data', api.startImport)}>Import Only</Button><Button disabled={!!activeJob} onClick={() => run('Build Features', api.startFeatures)}>Build Features Only</Button></Card><Card className="wide"><h2>Data health</h2><MiniTable rows={healthRows} columns={['symbol','tf','status','quality_score','rows','start','end','coverage_days','gap_count','market_closure_gaps','notes']} /></Card></section>}
-    {tab === 'logs' && <section className="grid"><Card><h2>Controls</h2><Button disabled={!!activeJob} onClick={async () => { await api.clearCompletedJobs(); await refreshAll(); setNotice('Completed jobs cleared.') }}>Clear completed jobs</Button><Button disabled={!!activeJob} onClick={async () => { await api.cleanOutputs(); await refreshAll(); setNotice('Outputs cleaned. Data/cache kept.') }}>Clean outputs</Button></Card><Card className="wide"><h2>Runs</h2><MiniTable rows={cleanOutputs} columns={['run','candidates','screened','sensitivity','portfolio']} /></Card><Card className="wide"><h2>Jobs</h2><MiniTable rows={jobs} columns={['id','kind','status','created_at','updated_at','error']} /></Card><Card className="wide"><h2>Latest log</h2><pre className="logs">{latestJob?.logs?.join('\n') || 'No jobs yet.'}</pre></Card></section>}
-  </main></div>
+  async function handleUpload(files: FileList | null) {
+    if (!files?.length) return
+    setBusy(true); setUploadState('A enviar ficheiros...')
+    try {
+      const r = await api.upload(files)
+      const err = r.errors?.length ? ` Erros: ${r.errors.map((x: any) => `${x.filename}: ${x.error}`).join(' | ')}` : ''
+      setUploadState(`${r.message || 'Upload concluído.'}${err}`)
+      setNotice('Upload concluído. Agora corre o pipeline completo para importar, limpar e testar.')
+      await refresh()
+    } catch (e: any) {
+      setUploadState(`Upload falhou: ${e.message}`)
+      setNotice(`Upload falhou: ${e.message}`)
+    } finally { setBusy(false) }
+  }
+
+  const finalCandidates = useMemo(() => portfolio?.top?.length ? portfolio.top : sensitivity?.top?.length ? sensitivity.top : mc?.top?.length ? mc.top : stress?.top?.length ? stress.top : walkforward?.top?.length ? walkforward.top : validation?.top || [], [portfolio, sensitivity, mc, stress, walkforward, validation])
+
+  return <div className="app">
+    <header className="topShell"><div className="topRow"><div className="brand"><div className="logo"><FlaskConical size={22}/></div><div><strong>CoreEA EdgeLab</strong><span>Research pipeline compacto</span></div></div><nav className="nav"><button className={view === 'pipeline' ? 'active' : ''} onClick={() => setView('pipeline')}>Pipeline</button><button className={view === 'data' ? 'active' : ''} onClick={() => setView('data')}>Dados</button><button className={view === 'results' ? 'active' : ''} onClick={() => setView('results')}>Resultados</button></nav></div></header>
+    <main className="main">
+      <section className="hero"><Card><h1>Do upload aos resultados numa só página</h1><p>Faz upload dos CSV/ZIP do MT5, corre o pipeline completo e acompanha progresso, logs, erros e resultados. O objetivo agora é ser percetível: o que está a correr, quanto falta, onde falhou e que estratégias passaram.</p><div className="actions"><Button className="primary big" disabled={!!activeJob || busy} onClick={startFullPipeline}><Play size={16}/> Run Full Pipeline</Button><Button disabled={!!activeJob || busy} onClick={() => refresh()}><RefreshCw size={16}/> Refresh</Button></div><div className={`notice ${latestJob?.status === 'failed' ? 'danger' : latestJob?.status === 'completed' ? 'ok' : ''}`}>{latestJob?.error ? `Erro: ${latestJob.error}` : lastLog}</div></Card><ProgressPanel job={activeJob || latestJob} progress={progress}/></section>
+      {view === 'pipeline' && <PipelineView health={health} healthSummary={healthSummary} outputs={outputs} selectedRun={selectedRun} setSelectedRun={setSelectedRun} activeJob={activeJob} runStep={runStep} currentRun={currentRun} validation={validation} walkforward={walkforward} stress={stress} mc={mc} sensitivity={sensitivity} portfolio={portfolio} latestJob={latestJob}/>} 
+      {view === 'data' && <DataView rawFiles={rawFiles} healthSummary={healthSummary} catalog={catalog} busy={busy || !!activeJob} handleUpload={handleUpload} uploadState={uploadState} runStep={runStep}/>} 
+      {view === 'results' && <ResultsView outputs={outputs} selectedRun={selectedRun} setSelectedRun={setSelectedRun} finalCandidates={finalCandidates} candidateRows={candidateRows} allRows={allRows} validation={validation} walkforward={walkforward} stress={stress} mc={mc} sensitivity={sensitivity} portfolio={portfolio}/>} 
+    </main>
+  </div>
 }
 
-function PipelineButtons({ run, activeJob, latestRun, currentRunName }: any) { return <div><Button className="primary huge" disabled={!!activeJob} onClick={() => run('Discover Edges', () => api.discover({ mode: 'auto' }), 'logs')}>Discover</Button><Button disabled={!!activeJob || !latestRun} onClick={() => run('Validate', () => api.validate({ scan_name: currentRunName }), 'logs')}>Validate</Button><Button disabled={!!activeJob || !latestRun} onClick={() => run('Walk-forward', () => api.runWalkforward({ scan_name: currentRunName }), 'logs')}>Walk-forward</Button><Button disabled={!!activeJob || !latestRun} onClick={() => run('Execution Stress', () => api.runExecutionStress({ scan_name: currentRunName }), 'logs')}>Stress</Button><Button disabled={!!activeJob || !latestRun} onClick={() => run('Monte Carlo', () => api.runMonteCarlo({ scan_name: currentRunName }), 'logs')}>Monte Carlo</Button><Button disabled={!!activeJob || !latestRun} onClick={() => run('Sensitivity', () => api.runSensitivity({ scan_name: currentRunName }), 'logs')}>Sensitivity</Button><Button disabled={!!activeJob || !latestRun} onClick={() => run('Portfolio Risk', () => api.runPortfolioRisk({ scan_name: currentRunName }), 'logs')}>Portfolio Risk</Button></div> }
-function Stage({ title, summary, keys, warning, children }: any) { return <Card className="wide"><h2>{title}</h2><div className="summaryGrid">{keys.map((k: string) => <div key={k}><strong>{summary?.[k] ?? 0}</strong><span>{label(k)}</span></div>)}</div><p>{warning}</p>{children}</Card> }
-function MonteCarloList({ rows }: { rows: any[] }) { if (!rows?.length) return <div className="empty">No Stage 5 Monte Carlo yet.</div>; return <MiniTable rows={rows} columns={['setup_id','symbol','tf','concept','mc_status','mc_score','profit_probability','p05_totalR','p95_dd_R','p99_dd_R','p95_loss_streak','ruin_probability','verdict']} /> }
-function StressList({ rows }: { rows: any[] }) { if (!rows?.length) return <div className="empty">No Stage 4 execution stress yet.</div>; return <MiniTable rows={rows} columns={['setup_id','symbol','tf','concept','stress_status','stress_pass_rate','base_pf','base_test_pf','base_avg_cost_R','worst_test_pf','worst_maxDD_R','verdict']} /> }
-function WalkForwardList({ rows }: { rows: any[] }) { if (!rows?.length) return <div className="empty">No Stage 3 walk-forward yet.</div>; return <MiniTable rows={rows} columns={['setup_id','symbol','tf','concept','wf_status','wf_score','wf_pass_rate','wf_median_pf','wf_min_pf','wf_median_expR','wf_verdict']} /> }
-function ValidationList({ rows }: { rows: any[] }) { if (!rows?.length) return <div className="empty">No Stage 2 validation yet.</div>; return <MiniTable rows={rows} columns={['setup_id','symbol','tf','concept','robustness_status','robustness_score','trades','pf','test_pf','verdict']} /> }
-function SensitivityList({ rows }: { rows: any[] }) { if (!rows?.length) return <div className="empty">No Stage 6 sensitivity yet.</div>; return <MiniTable rows={rows} columns={['setup_id','symbol','tf','concept','sensitivity_status','sensitivity_score','pass_rate','variants_tested','variants_passed','median_pf','min_pf','median_expR','maxDD_R','verdict']} /> }
-function PortfolioList({ rows }: { rows: any[] }) { if (!rows?.length) return <div className="empty">No Stage 7 portfolio risk yet.</div>; return <MiniTable rows={rows} columns={['setup_id','symbol','tf','concept','portfolio_status','portfolio_score','avg_abs_corr','standalone_monthly_dd_R','sumR','avg_cost_R','verdict']} /> }
-function UniverseGroups({ universe }: { universe: any }) { const entries = Object.entries(universe?.groups || {}); if (!entries.length) return <div className="empty">No strategy universe loaded.</div>; return <div className="universeGrid">{entries.map(([group, concepts]: any) => <div className="universeGroup" key={group}><h3>{label(group)}</h3>{concepts.map((c: any) => <div className="concept" key={c.id}><strong>{c.name}</strong><span>{c.data}</span><em className={`conceptStatus ${c.status.includes('requires') ? 'requires' : c.status}`}>{label(c.status)}</em></div>)}</div>)}</div> }
-function pageTitle(tab: Tab) { return { run: 'Run', edges: 'Edges', universe: 'Universe', data: 'Data', logs: 'Logs' }[tab] }
-function pageSub(tab: Tab) { return { run: 'Full pipeline through portfolio risk.', edges: 'Candidate ideas through all robustness gates.', universe: 'All concepts EdgeLab knows about.', data: 'Upload files and check whether the data is usable.', logs: 'Only for debugging when something goes wrong.' }[tab] }
+function ProgressPanel({ job, progress }: { job?: Job, progress: number }) {
+  const status = job?.status || 'idle'
+  const steps = job?.steps || []
+  return <div className="progressBox"><div className="progressTop"><div><h2>{job ? label(job.kind) : 'Pipeline status'}</h2><div className="statusLine"><span className={`pill ${status === 'completed' ? 'good' : status === 'failed' ? 'bad' : status === 'running' ? 'blue' : 'warn'}`}>{label(status)}</span><span>{job?.stage || 'À espera de execução'}</span></div></div><strong>{progress}%</strong></div><div className="progressBar"><div className="progressFill" style={{ width: `${progress}%` }}/></div>{steps.length ? <div className="steps">{steps.map((s: any) => <div key={s.id} className={`step ${s.status}`}>{s.label}</div>)}</div> : <div className="steps"><div className="step">Upload</div><div className="step">Import</div><div className="step">Discover</div><div className="step">Validate</div><div className="step">Stress</div><div className="step">Results</div></div>}</div>
+}
+
+function PipelineView({ health, healthSummary, outputs, selectedRun, setSelectedRun, activeJob, runStep, currentRun, validation, walkforward, stress, mc, sensitivity, portfolio, latestJob }: any) {
+  return <section className="grid"><Metric name="Engine" value={health?.ok ? 'Online' : 'Offline'} tone={health?.ok ? 'good' : 'bad'} icon={<Activity/>}/><Metric name="Datasets bons" value={healthSummary.good || 0} tone="good" icon={<Database/>}/><Metric name="Candidatos" value={outputs?.[0]?.candidate_count || 0} tone="warn" icon={<BarChart3/>}/><Metric name="Portfolio pass" value={portfolio?.portfolio_pass || 0} tone="good" icon={<CheckCircle2/>}/><Card className="span12"><h2>Run selecionado</h2><select value={selectedRun} onChange={e => setSelectedRun(e.target.value)}><option value="">Último run</option>{outputs.map((o: any) => <option key={o.name} value={o.name}>{o.name} — {o.candidate_count} candidatos / {o.all_count} testados</option>)}</select><div className="actions"><Button disabled={!!activeJob || !currentRun} onClick={() => runStep('Validate', () => api.validate({ scan_name: currentRun }))}>Validate</Button><Button disabled={!!activeJob || !currentRun} onClick={() => runStep('Walk-forward', () => api.runWalkforward({ scan_name: currentRun }))}>Walk-forward</Button><Button disabled={!!activeJob || !currentRun} onClick={() => runStep('Stress', () => api.runExecutionStress({ scan_name: currentRun }))}>Stress</Button><Button disabled={!!activeJob || !currentRun} onClick={() => runStep('Monte Carlo', () => api.runMonteCarlo({ scan_name: currentRun }))}>Monte Carlo</Button><Button disabled={!!activeJob || !currentRun} onClick={() => runStep('Sensitivity', () => api.runSensitivity({ scan_name: currentRun }))}>Sensitivity</Button><Button disabled={!!activeJob || !currentRun} onClick={() => runStep('Portfolio', () => api.runPortfolioRisk({ scan_name: currentRun }))}>Portfolio</Button></div></Card><StageSummary validation={validation} walkforward={walkforward} stress={stress} mc={mc} sensitivity={sensitivity} portfolio={portfolio}/><Card className="span12"><h2>Logs e erros</h2><pre className="logs">{latestJob?.logs?.join('\n') || 'Ainda sem logs. Faz upload e corre o pipeline.'}</pre></Card></section>
+}
+
+function StageSummary({ validation, walkforward, stress, mc, sensitivity, portfolio }: any) { return <Card className="span12"><h2>Estado por stage</h2><div className="summaryGrid"><div><strong>{validation?.robust_candidates ?? 0}</strong><span>Robust pass</span></div><div><strong>{walkforward?.wf_pass ?? 0}</strong><span>Walk-forward pass</span></div><div><strong>{stress?.stress_pass ?? 0}</strong><span>Stress pass</span></div><div><strong>{mc?.mc_pass ?? 0}</strong><span>Monte Carlo pass</span></div><div><strong>{sensitivity?.sensitivity_pass ?? 0}</strong><span>Sensitivity pass</span></div><div><strong>{portfolio?.portfolio_pass ?? 0}</strong><span>Portfolio pass</span></div><div><strong>{portfolio?.portfolio_monthly_dd_R ?? '-'}</strong><span>Portfolio DD R</span></div><div><strong>{portfolio?.avg_pair_corr ?? '-'}</strong><span>Avg correlation</span></div></div></Card> }
+
+function DataView({ rawFiles, healthSummary, catalog, busy, handleUpload, uploadState, runStep }: any) {
+  const datasets = catalog?.data_health?.datasets || []
+  return <section className="grid"><Card className="span8"><h2>Upload de dados MT5</h2><input className="file" type="file" multiple accept=".csv,.zip" disabled={busy} onChange={e => handleUpload(e.target.files)}/><p>{uploadState || 'Aceita CSV ou ZIP com CSV. Idealmente inclui colunas time, open, high, low, close e spread/spread_points.'}</p><div className="actions"><Button disabled={busy} onClick={() => runStep('Import Data', api.startImport)}>Import / Clean</Button><Button disabled={busy} onClick={() => runStep('Build Features', api.startFeatures)}>Build Features</Button></div></Card><Card className="span4"><h2>Saúde dos dados</h2><div className="summaryGrid"><div><strong>{healthSummary.good || 0}</strong><span>Good</span></div><div><strong>{healthSummary.usable || 0}</strong><span>Usable</span></div><div><strong>{healthSummary.weak || 0}</strong><span>Weak</span></div><div><strong>{rawFiles.length}</strong><span>Raw files</span></div></div></Card><Card className="span6"><h2>Ficheiros registados</h2><div className="rawList">{rawFiles.length ? rawFiles.slice(0,80).map((f: any) => <div className="rawItem" key={f.path || f}><strong>{f.path || f}</strong><span>{f.size ? `${Math.round(f.size/1024)} KB` : ''}</span></div>) : <div className="empty">Nenhum ficheiro encontrado em data/raw.</div>}</div></Card><Card className="span6"><h2>Datasets limpos / lidos</h2><MiniTable rows={datasets} columns={['symbol','tf','status','quality_score','rows','start','end','coverage_days','gap_count','notes']} tall/></Card></section>
+}
+
+function ResultsView({ outputs, selectedRun, setSelectedRun, finalCandidates, candidateRows, allRows, validation, walkforward, stress, mc, sensitivity, portfolio }: any) {
+  return <section className="grid"><Card className="span12"><h2>Resultados finais</h2><select value={selectedRun} onChange={e => setSelectedRun(e.target.value)}><option value="">Selecionar run</option>{outputs.map((o: any) => <option key={o.name} value={o.name}>{o.name}</option>)}</select><ResultCards rows={finalCandidates}/></Card><Card className="span12"><h2>Todos os candidatos</h2><MiniTable rows={candidateRows} columns={['setup_id','symbol','tf','concept','session','lookback','rr','sl_mult','pf','test_pf','expR','maxDD_R','avg_cost_R','verdict']} tall/></Card><Card className="span12"><h2>Stage details</h2><div className="twoCols"><div><h3>Portfolio</h3><MiniTable rows={portfolio?.top || []} columns={['setup_id','portfolio_status','portfolio_score','avg_abs_corr','standalone_monthly_dd_R','sumR','verdict']}/></div><div><h3>Sensitivity</h3><MiniTable rows={sensitivity?.top || []} columns={['setup_id','sensitivity_status','sensitivity_score','pass_rate','median_pf','min_pf','verdict']}/></div><div><h3>Stress</h3><MiniTable rows={stress?.top || []} columns={['setup_id','stress_status','stress_pass_rate','base_pf','worst_test_pf','verdict']}/></div><div><h3>Monte Carlo</h3><MiniTable rows={mc?.top || []} columns={['setup_id','mc_status','mc_score','profit_probability','p95_dd_R','ruin_probability','verdict']}/></div></div></Card><Card className="span12"><h2>Todos os testes brutos</h2><MiniTable rows={allRows} columns={['setup_id','symbol','tf','concept','session','lookback','rr','sl_mult','status','pf','test_pf','expR','maxDD_R','score','verdict']} tall/></Card></section>
+}
+
+function ResultCards({ rows }: { rows: any[] }) {
+  if (!rows?.length) return <div className="empty">Ainda não há edge final. Corre o pipeline completo ou vê os logs para perceber onde parou.</div>
+  return <div className="resultList">{rows.slice(0, 15).map((r, i) => <div className="result" key={r.setup_id || i}><div><strong>{r.symbol} {r.tf} — {label(r.concept)}</strong><br/><small>{r.setup_id || `${r.session} / ${r.lookback} / RR ${r.rr}`}</small></div><span className={`pill ${String(r.portfolio_status || r.sensitivity_status || r.mc_status || r.stress_status || '').includes('pass') ? 'good' : 'warn'}`}>{label(r.portfolio_status || r.sensitivity_status || r.mc_status || r.stress_status || r.wf_status || r.robustness_status || 'candidate')}</span><div className="metricsLine"><span>PF <b>{r.pf || r.base_pf || r.median_pf || '-'}</b></span><span>Test PF <b>{r.test_pf || r.base_test_pf || r.worst_test_pf || '-'}</b></span><span>Score <b>{r.portfolio_score || r.sensitivity_score || r.mc_score || r.wf_score || r.robustness_score || '-'}</b></span><span>DD R <b>{r.maxDD_R || r.standalone_monthly_dd_R || r.p95_dd_R || '-'}</b></span><span>{r.verdict || 'No verdict'}</span></div></div>)}</div>
+}
