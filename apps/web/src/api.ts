@@ -20,6 +20,8 @@ export const api = {
   validate: (payload: any = {}) => req('/api/jobs/validate', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
   walkforward: (scan?: string) => req(`/api/walkforward${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
   runWalkforward: (payload: any = {}) => req('/api/jobs/walkforward', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
+  executionStress: (scan?: string) => req(`/api/execution-stress${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
+  runExecutionStress: (payload: any = {}) => req('/api/jobs/execution-stress', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
   jobs: () => req('/api/jobs'),
   clearCompletedJobs: () => req('/api/jobs/completed', { method: 'DELETE' }),
   startImport: () => req('/api/jobs/import', { method: 'POST' }),
