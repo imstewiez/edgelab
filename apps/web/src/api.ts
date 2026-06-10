@@ -18,6 +18,8 @@ export const api = {
   strategyUniverse: () => req('/api/strategy-universe'),
   validation: (scan?: string) => req(`/api/validation${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
   validate: (payload: any = {}) => req('/api/jobs/validate', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
+  walkforward: (scan?: string) => req(`/api/walkforward${scan ? `?scan_name=${encodeURIComponent(scan)}` : ''}`),
+  runWalkforward: (payload: any = {}) => req('/api/jobs/walkforward', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }),
   jobs: () => req('/api/jobs'),
   clearCompletedJobs: () => req('/api/jobs/completed', { method: 'DELETE' }),
   startImport: () => req('/api/jobs/import', { method: 'POST' }),
