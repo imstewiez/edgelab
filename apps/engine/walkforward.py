@@ -8,7 +8,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from quantlab_core import OUTPUTS_DIR, feature_path, signals, session_mask, backtest, st, HORIZON
+from quantlab_core import OUTPUTS_DIR, HORIZON, backtest, feature_path, row_setup_id, session_mask, signals, st
 
 WALKFORWARD_PATH = OUTPUTS_DIR / "latest_walkforward.json"
 
@@ -37,15 +37,12 @@ def _window_stats(df: pd.DataFrame, row: dict, windows: int = 5):
     session = str(row.get("session", "all"))
     rr = _safe_float(row.get("rr"), 1.0)
     sl_mult = _safe_float(row.get("sl_mult"), 1.0)
-
     start = pd.to_datetime(df.time.min())
     end = pd.to_datetime(df.time.max())
     if start >= end:
         return []
-
     cuts = pd.date_range(start=start, end=end, periods=windows + 1)
     rows = []
-
     for i in range(len(cuts) - 1):
         w0, w1 = cuts[i], cuts[i + 1]
         chunk = df[(pd.to_datetime(df.time) >= w0) & (pd.to_datetime(df.time) < w1)].copy()
@@ -53,49 +50,20 @@ def _window_stats(df: pd.DataFrame, row: dict, windows: int = 5):
             continue
         if len(chunk) < 80 and tf == "D1":
             continue
-
         b0, s0 = signals(chunk, concept, lookback)
         sm = session_mask(chunk, session)
-        trades = backtest(chunk, b0 & sm, s0 & sm, rr, sl_mult, HORIZON.get(tf, 48))
+        trades = backtest(chunk, b0 & sm, s0 & sm, rr, sl_mult, HORIZON.get(tf, 48), symbol=symbol)
         base = st(trades)
         if not base:
-            rows.append({
-                "window": i + 1,
-                "start": str(w0.date()),
-                "end": str(w1.date()),
-                "trades": 0,
-                "pf": 0,
-                "expR": 0,
-                "maxDD_R": 0,
-                "sumR": 0,
-                "passed": False,
-            })
+            rows.append({"window": i + 1, "start": str(w0.date()), "end": str(w1.date()), "trades": 0, "pf": 0, "expR": 0, "maxDD_R": 0, "sumR": 0, "passed": False})
             continue
-
-        passed = base["n"] >= 8 and base["pf"] >= 1.0 and base["sumR"] > 0
-        rows.append({
-            "window": i + 1,
-            "start": str(w0.date()),
-            "end": str(w1.date()),
-            "trades": int(base["n"]),
-            "pf": float(base["pf"]),
-            "expR": float(base["expR"]),
-            "maxDD_R": float(base["maxDD_R"]),
-            "sumR": float(base["sumR"]),
-            "passed": bool(passed),
-        })
-
+        rows.append({"window": i + 1, "start": str(w0.date()), "end": str(w1.date()), "trades": int(base["n"]), "pf": float(base["pf"]), "expR": float(base["expR"]), "maxDD_R": float(base["maxDD_R"]), "sumR": float(base["sumR"]), "avg_cost_R": round(float(trades.cost_r.mean()), 5) if "cost_r" in trades else 0, "passed": bool(base["n"] >= 8 and base["pf"] >= 1.0 and base["sumR"] > 0)})
     return rows
 
 
-def _grade_walkforward(base_row: dict, rows: list[dict]):
+def _grade_walkforward(rows: list[dict]):
     if not rows:
-        return {
-            "wf_status": "no_windows",
-            "wf_score": 0,
-            "wf_verdict": "Not enough data for walk-forward windows",
-        }
-
+        return {"wf_status": "no_windows", "wf_score": 0, "wf_verdict": "Not enough data for walk-forward windows"}
     pfs = [r["pf"] for r in rows if r["trades"] > 0]
     exp_rs = [r["expR"] for r in rows if r["trades"] > 0]
     dds = [r["maxDD_R"] for r in rows if r["trades"] > 0]
@@ -107,9 +75,8 @@ def _grade_walkforward(base_row: dict, rows: list[dict]):
     min_pf = float(np.min(pfs)) if pfs else 0
     median_exp = float(np.median(exp_rs)) if exp_rs else 0
     max_dd = float(np.max(dds)) if dds else 999
-
-    reasons = []
     score = 0
+    reasons = []
     if len(rows) >= 4: score += 15
     else: reasons.append("too few windows")
     if active_rate >= 0.75: score += 15
@@ -126,27 +93,8 @@ def _grade_walkforward(base_row: dict, rows: list[dict]):
     else: reasons.append("median expectancy is not positive")
     if max_dd <= 10: score += 5
     else: reasons.append("walk-forward DD too high")
-
-    if score >= 75 and not reasons:
-        status = "wf_pass"
-    elif score >= 55:
-        status = "wf_watchlist"
-    else:
-        status = "wf_fail"
-
-    return {
-        "wf_status": status,
-        "wf_score": int(score),
-        "wf_windows": len(rows),
-        "wf_active_windows": active_windows,
-        "wf_passed_windows": passed_count,
-        "wf_pass_rate": round(pass_rate, 3),
-        "wf_median_pf": round(median_pf, 3),
-        "wf_min_pf": round(min_pf, 3),
-        "wf_median_expR": round(median_exp, 4),
-        "wf_maxDD_R": round(max_dd, 3),
-        "wf_verdict": "; ".join(reasons) if reasons else "Passed first walk-forward gate",
-    }
+    status = "wf_pass" if score >= 75 and not reasons else ("wf_watchlist" if score >= 55 else "wf_fail")
+    return {"wf_status": status, "wf_score": int(score), "wf_windows": len(rows), "wf_active_windows": active_windows, "wf_passed_windows": passed_count, "wf_pass_rate": round(pass_rate, 3), "wf_median_pf": round(median_pf, 3), "wf_min_pf": round(min_pf, 3), "wf_median_expR": round(median_exp, 4), "wf_maxDD_R": round(max_dd, 3), "wf_verdict": "; ".join(reasons) if reasons else "Passed first walk-forward gate"}
 
 
 def run_walkforward(scan_name: str | None = None, logger: Callable[[str], None] = print):
@@ -154,62 +102,25 @@ def run_walkforward(scan_name: str | None = None, logger: Callable[[str], None] 
     run_dir = OUTPUTS_DIR / scan_name if scan_name else _latest_output_dir()
     if not run_dir or not run_dir.exists():
         raise RuntimeError("No discovery run found. Run Discover Edges first.")
-
     cand_path = run_dir / "candidate_edges.csv"
     if not cand_path.exists():
         raise RuntimeError("No candidate_edges.csv found for this run.")
-
-    candidates = pd.read_csv(cand_path).replace([np.inf, -np.inf], np.nan).fillna("")
-    candidates = candidates.head(80)
+    candidates = pd.read_csv(cand_path).replace([np.inf, -np.inf], np.nan).fillna("").head(80)
     logger(f"Walk-forward validating {len(candidates)} candidates from {run_dir.name}")
-
     summary_rows = []
     details = {}
     for idx, row in enumerate(candidates.to_dict("records"), 1):
-        symbol = str(row.get("symbol"))
-        tf = str(row.get("tf"))
-        concept = str(row.get("concept"))
+        symbol = str(row.get("symbol")); tf = str(row.get("tf")); concept = str(row.get("concept")); setup_id = row.get("setup_id") or row_setup_id(row)
         logger(f"[{idx}/{len(candidates)}] WF {symbol} {tf} {concept}")
         fp = feature_path(symbol, tf)
         if not fp.exists():
             continue
-        df = pd.read_pickle(fp)
-        rows = _window_stats(df, row, windows=5)
-        grade = _grade_walkforward(row, rows)
-        base = {
-            "symbol": symbol,
-            "tf": tf,
-            "concept": concept,
-            "session": row.get("session", ""),
-            "rr": row.get("rr", ""),
-            "sl_mult": row.get("sl_mult", ""),
-            "discovery_pf": row.get("pf", ""),
-            "discovery_test_pf": row.get("test_pf", ""),
-            "discovery_trades": row.get("n", ""),
-        }
-        base.update(grade)
-        summary_rows.append(base)
-        details[f"{symbol}_{tf}_{concept}_{idx}"] = rows
-
+        rows = _window_stats(pd.read_pickle(fp), row, windows=5)
+        base = {"setup_id": setup_id, "symbol": symbol, "tf": tf, "concept": concept, "lookback": row.get("lookback", ""), "session": row.get("session", ""), "rr": row.get("rr", ""), "sl_mult": row.get("sl_mult", ""), "n": row.get("n", ""), "pf": row.get("pf", ""), "test_pf": row.get("test_pf", ""), "expR": row.get("expR", ""), "maxDD_R": row.get("maxDD_R", ""), "positive_month_pct": row.get("positive_month_pct", ""), "avg_cost_R": row.get("avg_cost_R", "")}
+        base.update(_grade_walkforward(rows)); summary_rows.append(base); details[setup_id] = rows
     out = pd.DataFrame(summary_rows).sort_values("wf_score", ascending=False) if summary_rows else pd.DataFrame()
     out.to_csv(run_dir / "stage3_walkforward.csv", index=False)
-    passed = int((out.wf_status == "wf_pass").sum()) if not out.empty else 0
-    watch = int((out.wf_status == "wf_watchlist").sum()) if not out.empty else 0
-    failed = int((out.wf_status == "wf_fail").sum()) if not out.empty else 0
-
-    summary = {
-        "scan_name": run_dir.name,
-        "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "candidates_checked": int(len(out)),
-        "wf_pass": passed,
-        "wf_watchlist": watch,
-        "wf_fail": failed,
-        "ea_ready": 0,
-        "stage": "Stage 3 first-pass walk-forward matrix",
-        "warning": "This is a first walk-forward gate. EA-ready remains 0 until spread/slippage, Monte Carlo and live-forward paper tracking pass.",
-        "top": out.head(25).to_dict("records") if not out.empty else [],
-        "details": details,
-    }
+    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(out)), "wf_pass": int((out.wf_status == "wf_pass").sum()) if not out.empty else 0, "wf_watchlist": int((out.wf_status == "wf_watchlist").sum()) if not out.empty else 0, "wf_fail": int((out.wf_status == "wf_fail").sum()) if not out.empty else 0, "ea_ready": 0, "stage": "Stage 3 first-pass walk-forward matrix", "warning": "This is a first walk-forward gate. EA-ready remains 0 until spread/slippage, Monte Carlo and live-forward paper tracking pass.", "top": out.head(25).to_dict("records") if not out.empty else [], "details": details}
     (run_dir / "WALKFORWARD_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     WALKFORWARD_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
@@ -222,12 +133,4 @@ def read_walkforward(scan_name: str | None = None):
             return json.loads(p.read_text(encoding="utf-8"))
     if WALKFORWARD_PATH.exists():
         return json.loads(WALKFORWARD_PATH.read_text(encoding="utf-8"))
-    return {
-        "candidates_checked": 0,
-        "wf_pass": 0,
-        "wf_watchlist": 0,
-        "wf_fail": 0,
-        "ea_ready": 0,
-        "top": [],
-        "warning": "No walk-forward run yet.",
-    }
+    return {"candidates_checked": 0, "wf_pass": 0, "wf_watchlist": 0, "wf_fail": 0, "ea_ready": 0, "top": [], "warning": "No walk-forward run yet."}
