@@ -10,6 +10,7 @@ import pandas as pd
 
 from pipeline_io import EDGE_COLUMNS, VALIDATION_COLUMNS, safe_read_csv, safe_to_csv
 from quantlab_core import OUTPUTS_DIR, row_setup_id
+from stage_limits import limit_candidates
 
 VALIDATION_PATH = OUTPUTS_DIR / "latest_validation.json"
 
@@ -128,8 +129,9 @@ def run_validation(scan_name: str | None = None, logger: Callable[[str], None] =
         raise RuntimeError("No discovery run found. Run Discover Edges first.")
 
     cand_path = run_dir / "candidate_edges.csv"
-    candidates = safe_read_csv(cand_path, EDGE_COLUMNS)
-    logger(f"Validating {len(candidates)} candidate edges from {run_dir.name}")
+    all_candidates = safe_read_csv(cand_path, EDGE_COLUMNS)
+    candidates = limit_candidates(all_candidates, "validation", logger)
+    logger(f"Validating {len(candidates)} ranked candidates from {run_dir.name} ({len(all_candidates)} discovered)")
 
     rows = [_validate_row(r) for r in candidates.to_dict("records")]
     df = pd.DataFrame(rows).sort_values("robustness_score", ascending=False) if rows else pd.DataFrame(columns=VALIDATION_COLUMNS)
@@ -142,14 +144,15 @@ def run_validation(scan_name: str | None = None, logger: Callable[[str], None] =
     summary = {
         "scan_name": run_dir.name,
         "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "candidates_discovered": int(len(all_candidates)),
         "candidates_checked": int(len(df)),
         "robust_candidates": int(len(robust)),
         "watchlist": int(len(watch)),
         "not_robust": int(len(not_robust)),
         "ea_ready": 0,
-        "stage": "Stage 2 first-pass robustness gate",
-        "warning": "EA-ready remains 0 until true walk-forward, slippage/spread stress, Monte Carlo and forward paper tracking pass.",
-        "top": df.head(20).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not df.empty else [],
+        "stage": "Stage 2 ranked first-pass robustness gate",
+        "warning": "Validation is intentionally gated to the best ranked candidates. EA-ready remains 0 until walk-forward, execution stress, Monte Carlo, permutation and forward paper tracking pass.",
+        "top": df.head(25).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not df.empty else [],
     }
 
     (run_dir / "VALIDATION_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
