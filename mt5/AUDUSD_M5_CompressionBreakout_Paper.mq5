@@ -7,7 +7,7 @@
 //| paper-forward evidence is collected.                              |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "0.1"
+#property version   "1.000"
 #property description "AUDUSD M5 compression breakout paper-forward tracker"
 
 #include <Trade/Trade.mqh>
