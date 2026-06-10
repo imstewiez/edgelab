@@ -3,24 +3,41 @@ import { Activity, BarChart3, CheckCircle2, Database, FlaskConical, Play, Refres
 import { api } from './api'
 
 type View = 'pipeline' | 'data' | 'results'
-type Job = { id: string; kind: string; status: string; percent?: number; stage?: string; steps?: any[]; created_at?: string; updated_at?: string; logs?: string[]; error?: string; result?: any }
+type ResearchMode = 'quick' | 'balanced' | 'deep'
+type Job = { id: string; kind: string; status: string; percent?: number; stage?: string; steps?: any[]; created_at?: string; updated_at?: string; logs?: string[]; error?: string; result?: any; payload?: any }
 
 const label = (v: string) => String(v || '').replaceAll('_', ' ').replace(/\b\w/g, s => s.toUpperCase())
 const Card = ({ children, className = '' }: any) => <div className={`card ${className}`}>{children}</div>
 const Button = ({ children, disabled, className = '', ...props }: any) => <button className={`btn ${className}`} disabled={disabled} {...props}>{children}</button>
 const Metric = ({ name, value, tone = '', icon }: any) => <Card><div className={`metric ${tone}`}>{icon}<div><p>{name}</p><strong>{value}</strong></div></div></Card>
 
+const MODE_COPY: Record<ResearchMode, { title: string; body: string; tone: string }> = {
+  quick: { title: 'Quick sanity', body: 'Só prova que o sistema corre. Poucos datasets/conceitos. Não usar para tirar conclusões.', tone: 'warn' },
+  balanced: { title: 'Balanced research', body: 'Modo recomendado: vários símbolos, timeframes e famílias de ineficiência sem explodir o tempo.', tone: 'good' },
+  deep: { title: 'Deep scan', body: 'Mais lento. Usar depois de escolher símbolos/timeframes ou para confirmar uma shortlist.', tone: 'blue' },
+}
+
 function MiniTable({ rows, columns, tall = false }: { rows: any[], columns: string[], tall?: boolean }) {
   if (!rows?.length) return <div className="empty">Ainda sem resultados nesta secção.</div>
-  return <div className={`tableWrap ${tall ? 'tall' : ''}`}><table><thead><tr>{columns.map(c => <th key={c}>{label(c)}</th>)}</tr></thead><tbody>{rows.slice(0, 120).map((r, i) => <tr key={i}>{columns.map(c => <td key={c}>{String(r[c] ?? '')}</td>)}</tr>)}</tbody></table></div>
+  return <div className={`tableWrap ${tall ? 'tall' : ''}`}><table><thead><tr>{columns.map(c => <th key={c}>{label(c)}</th>)}</tr></thead><tbody>{rows.slice(0, 160).map((r, i) => <tr key={i}>{columns.map(c => <td key={c} title={String(r[c] ?? '')}>{String(r[c] ?? '')}</td>)}</tr>)}</tbody></table></div>
 }
 
 function latestPipelineRun(jobs: Job[]) {
   return jobs.find(j => j.kind === 'full_pipeline' && j.status === 'completed' && j.result?.scan_name)?.result?.scan_name || ''
 }
 
+function latestPipelineMode(jobs: Job[]) {
+  return jobs.find(j => j.kind === 'full_pipeline' && j.status === 'completed')?.result?.mode || jobs.find(j => j.kind === 'full_pipeline')?.payload?.mode || ''
+}
+
+function isQuickEvidence(rows: any[], jobMode: string) {
+  if (String(jobMode).toLowerCase() === 'quick') return true
+  return rows.some(r => String(r.verdict || '').toLowerCase().includes('quick automated'))
+}
+
 export function App() {
   const [view, setView] = useState<View>('pipeline')
+  const [scanMode, setScanMode] = useState<ResearchMode>('balanced')
   const [health, setHealth] = useState<any>(null)
   const [catalog, setCatalog] = useState<any>({ raw_files: [], data_health: { datasets: [], summary: {} } })
   const [jobs, setJobs] = useState<Job[]>([])
@@ -44,7 +61,9 @@ export function App() {
   const activeJob = jobs.find(j => ['queued', 'running'].includes(j.status))
   const latestJob = jobs[0]
   const completedPipelineRun = latestPipelineRun(jobs)
+  const currentMode = latestPipelineMode(jobs)
   const currentRun = selectedRun || completedPipelineRun || outputs[0]?.name || ''
+  const quickRun = isQuickEvidence([...candidateRows, ...allRows], currentMode)
   const progress = Math.max(0, Math.min(100, Number(activeJob?.percent ?? (latestJob?.status === 'completed' ? 100 : 0))))
   const lastLog = activeJob?.logs?.slice(-1)[0] || latestJob?.logs?.slice(-1)[0] || notice
   const healthSummary = catalog?.data_health?.summary || {}
@@ -83,10 +102,10 @@ export function App() {
   useEffect(() => { if (completedPipelineRun && selectedRun !== completedPipelineRun) setSelectedRun(completedPipelineRun) }, [completedPipelineRun, selectedRun])
   useEffect(() => { if (!selectedRun && !completedPipelineRun && outputs?.[0]?.name) setSelectedRun(outputs[0].name) }, [outputs, selectedRun, completedPipelineRun])
 
-  async function startFullPipeline() {
+  async function startFullPipeline(mode = scanMode) {
     if (activeJob || busy) return
-    setBusy(true); setNotice('A iniciar pipeline completo...')
-    try { const r = await api.fullPipeline({ mode: 'quick' }); setNotice(r.message || 'Pipeline iniciado.'); setView('pipeline'); await refresh() }
+    setBusy(true); setNotice(`A iniciar pipeline completo em modo ${mode}...`)
+    try { const r = await api.fullPipeline({ mode }); setNotice(r.message || 'Pipeline iniciado.'); setView('pipeline'); await refresh() }
     catch (e: any) { setNotice(`Erro: ${e.message}`) }
     finally { setBusy(false) }
   }
@@ -106,7 +125,7 @@ export function App() {
       const r = await api.upload(files)
       const err = r.errors?.length ? ` Erros: ${r.errors.map((x: any) => `${x.filename}: ${x.error}`).join(' | ')}` : ''
       setUploadState(`${r.message || 'Upload concluído.'}${err}`)
-      setNotice('Upload concluído. Agora corre o pipeline completo para importar, limpar e testar.')
+      setNotice('Upload concluído. Agora corre Balanced Research para importar, limpar e testar.')
       await refresh()
     } catch (e: any) {
       setUploadState(`Upload falhou: ${e.message}`)
@@ -119,11 +138,19 @@ export function App() {
   return <div className="app">
     <header className="topShell"><div className="topRow"><div className="brand"><div className="logo"><FlaskConical size={22}/></div><div><strong>CoreEA EdgeLab</strong><span>Research pipeline compacto</span></div></div><nav className="nav"><button className={view === 'pipeline' ? 'active' : ''} onClick={() => setView('pipeline')}>Pipeline</button><button className={view === 'data' ? 'active' : ''} onClick={() => setView('data')}>Dados</button><button className={view === 'results' ? 'active' : ''} onClick={() => setView('results')}>Resultados</button></nav></div></header>
     <main className="main">
-      <section className="hero"><Card><h1>Research unificado: dados → eventos → validação → incubação</h1><p>Um fluxo simples. O sistema importa dados, cria features, descobre eventos/setups, testa robustez, compara contra aleatório e só depois coloca candidatos em incubação. EA-ready continua bloqueado até haver forward evidence.</p><div className="actions"><Button className="primary big" disabled={!!activeJob || busy} onClick={startFullPipeline}><Play size={16}/> Run Full Pipeline</Button><Button disabled={!!activeJob || busy} onClick={() => refresh()}><RefreshCw size={16}/> Refresh</Button></div><div className={`notice ${latestJob?.status === 'failed' ? 'danger' : latestJob?.status === 'completed' ? 'ok' : ''}`}>{latestJob?.error ? `Erro: ${latestJob.error}` : lastLog}</div></Card><ProgressPanel job={activeJob || latestJob} progress={progress}/></section>
+      <section className="hero"><Card><h1>Research unificado: dados → eventos → validação → incubação</h1><p>O objetivo não é aceitar o primeiro backtest bonito. O sistema procura padrões/ineficiências, testa robustez, compara contra aleatório e bloqueia EA-ready até haver forward evidence.</p><ResearchModeBox mode={scanMode} setMode={setScanMode} busy={busy || !!activeJob} startFullPipeline={startFullPipeline}/><div className="actions"><Button disabled={!!activeJob || busy} onClick={() => refresh()}><RefreshCw size={16}/> Refresh</Button></div><div className={`notice ${latestJob?.status === 'failed' ? 'danger' : latestJob?.status === 'completed' ? 'ok' : ''}`}>{latestJob?.error ? `Erro: ${latestJob.error}` : lastLog}</div></Card><ProgressPanel job={activeJob || latestJob} progress={progress}/></section>
+      {quickRun && <div className="warningBox"><b>Esta run é Quick/Sanity.</b> Serve para testar o pipeline, não para concluir que só existe edge em XAUUSD/D1. Corre <b>Balanced Research</b> para uma análise minimamente representativa.</div>}
       {view === 'pipeline' && <PipelineView health={health} healthSummary={healthSummary} outputs={outputs} selectedRun={selectedRun} setSelectedRun={setSelectedRun} activeJob={activeJob} runStep={runStep} currentRun={currentRun} eventLab={eventLab} validation={validation} walkforward={walkforward} stress={stress} mc={mc} sensitivity={sensitivity} portfolio={portfolio} permutation={permutation} incubation={incubation} latestJob={latestJob}/>} 
       {view === 'data' && <DataView rawFiles={rawFiles} healthSummary={healthSummary} catalog={catalog} busy={busy || !!activeJob} handleUpload={handleUpload} uploadState={uploadState} runStep={runStep}/>} 
-      {view === 'results' && <ResultsView outputs={outputs} selectedRun={selectedRun} setSelectedRun={setSelectedRun} currentRun={currentRun} finalCandidates={finalCandidates} candidateRows={candidateRows} allRows={allRows} eventLab={eventLab} validation={validation} walkforward={walkforward} stress={stress} mc={mc} sensitivity={sensitivity} portfolio={portfolio} permutation={permutation} incubation={incubation}/>} 
+      {view === 'results' && <ResultsView outputs={outputs} selectedRun={selectedRun} setSelectedRun={setSelectedRun} currentRun={currentRun} finalCandidates={finalCandidates} candidateRows={candidateRows} allRows={allRows} quickRun={quickRun} eventLab={eventLab} validation={validation} walkforward={walkforward} stress={stress} mc={mc} sensitivity={sensitivity} portfolio={portfolio} permutation={permutation} incubation={incubation}/>} 
     </main>
+  </div>
+}
+
+function ResearchModeBox({ mode, setMode, busy, startFullPipeline }: { mode: ResearchMode; setMode: (m: ResearchMode) => void; busy: boolean; startFullPipeline: (m?: ResearchMode) => void }) {
+  return <div className="modePanel">
+    {(Object.keys(MODE_COPY) as ResearchMode[]).map(m => <button key={m} className={`modeOption ${mode === m ? 'selected' : ''}`} disabled={busy} onClick={() => setMode(m)}><span className={`pill ${MODE_COPY[m].tone}`}>{MODE_COPY[m].title}</span><small>{MODE_COPY[m].body}</small></button>)}
+    <Button className="primary big" disabled={busy} onClick={() => startFullPipeline(mode)}><Play size={16}/> Run {MODE_COPY[mode].title}</Button>
   </div>
 }
 
@@ -144,8 +171,8 @@ function DataView({ rawFiles, healthSummary, catalog, busy, handleUpload, upload
   return <section className="grid"><Card className="span8"><h2>Upload de dados MT5</h2><input className="file" type="file" multiple accept=".csv,.zip" disabled={busy} onChange={e => handleUpload(e.target.files)}/><p>{uploadState || 'Aceita CSV ou ZIP com CSV. Idealmente inclui colunas time, open, high, low, close e spread/spread_points.'}</p><div className="actions"><Button disabled={busy} onClick={() => runStep('Import Data', api.startImport)}>Import / Clean</Button><Button disabled={busy} onClick={() => runStep('Build Features', api.startFeatures)}>Build Features</Button></div></Card><Card className="span4"><h2>Saúde dos dados</h2><div className="summaryGrid"><div><strong>{healthSummary.good || 0}</strong><span>Good</span></div><div><strong>{healthSummary.usable || 0}</strong><span>Usable</span></div><div><strong>{healthSummary.weak || 0}</strong><span>Weak</span></div><div><strong>{rawFiles.length}</strong><span>Raw files</span></div></div></Card><Card className="span6"><h2>Ficheiros registados</h2><div className="rawList">{rawFiles.length ? rawFiles.slice(0,80).map((f: any) => <div className="rawItem" key={f.path || f}><strong>{f.path || f}</strong><span>{f.size ? `${Math.round(f.size/1024)} KB` : ''}</span></div>) : <div className="empty">Nenhum ficheiro encontrado em data/raw.</div>}</div></Card><Card className="span6"><h2>Datasets limpos / lidos</h2><MiniTable rows={datasets} columns={['symbol','tf','status','quality_score','rows','start','end','coverage_days','gap_count','notes']} tall/></Card></section>
 }
 
-function ResultsView({ outputs, selectedRun, setSelectedRun, currentRun, finalCandidates, candidateRows, allRows, eventLab, validation, walkforward, stress, mc, sensitivity, portfolio, permutation, incubation }: any) {
-  return <section className="grid"><Card className="span12"><h2>Shortlist da run</h2><p className="muted">Run analisada: <b>{currentRun || selectedRun || 'nenhuma'}</b>. Isto é research shortlist, não EA-ready. Para ficar EA-ready precisa de incubação/paper-forward.</p><select value={selectedRun} onChange={e => setSelectedRun(e.target.value)}><option value="">Último pipeline completo</option>{outputs.map((o: any) => <option key={o.name} value={o.name}>{o.name} — {o.candidate_count} candidatos / {o.all_count} testados</option>)}</select><ResultCards rows={finalCandidates}/></Card><StageSummary eventLab={eventLab} validation={validation} walkforward={walkforward} stress={stress} mc={mc} sensitivity={sensitivity} portfolio={portfolio} permutation={permutation} incubation={incubation}/><Card className="span12"><h2>Candidatos descobertos</h2><MiniTable rows={candidateRows} columns={['setup_id','symbol','tf','concept','session','lookback','rr','sl_mult','pf','test_pf','expR','maxDD_R','avg_cost_R','verdict']} tall/></Card><Card className="span12"><h2>Research details</h2><div className="twoCols"><div><h3>Event Lab</h3><MiniTable rows={eventLab?.top || []} columns={['setup_id','event_status','events','tp_first_pct','mean_forward_R','mean_mfe_R','mean_mae_R','verdict']}/></div><div><h3>Validation</h3><MiniTable rows={validation?.top || []} columns={['setup_id','robustness_status','robustness_score','pf','test_pf','expR','maxDD_R','verdict']}/></div><div><h3>Walk-forward</h3><MiniTable rows={walkforward?.top || []} columns={['setup_id','wf_status','wf_score','wf_pass_rate','wf_median_pf','wf_min_pf','wf_verdict']}/></div><div><h3>Stress</h3><MiniTable rows={stress?.top || []} columns={['setup_id','stress_status','stress_pass_rate','worst_test_pf','worst_maxDD_R','verdict']}/></div><div><h3>Monte Carlo</h3><MiniTable rows={mc?.top || []} columns={['setup_id','mc_status','mc_score','profit_probability','p05_totalR','p95_dd_R','ruin_probability','verdict']}/></div><div><h3>Sensitivity</h3><MiniTable rows={sensitivity?.top || []} columns={['setup_id','sensitivity_status','sensitivity_score','pass_rate','median_pf','min_pf','verdict']}/></div><div><h3>Portfolio</h3><MiniTable rows={portfolio?.top || []} columns={['setup_id','portfolio_status','portfolio_score','avg_abs_corr','standalone_monthly_dd_R','sumR','verdict']}/></div><div><h3>Permutation</h3><MiniTable rows={permutation?.top || []} columns={['setup_id','permutation_status','permutation_score','real_sumR','random_median_sumR','sumR_percentile','verdict']}/></div><div><h3>Incubation</h3><MiniTable rows={incubation?.top || []} columns={['setup_id','incubation_status','paper_days','paper_trades','paper_sumR','paper_maxDD_R','promotion_rule']}/></div></div></Card><Card className="span12"><h2>Todos os testes brutos</h2><MiniTable rows={allRows} columns={['setup_id','symbol','tf','concept','session','lookback','rr','sl_mult','status','pf','test_pf','expR','maxDD_R','score','verdict']} tall/></Card></section>
+function ResultsView({ outputs, selectedRun, setSelectedRun, currentRun, finalCandidates, candidateRows, allRows, quickRun, eventLab, validation, walkforward, stress, mc, sensitivity, portfolio, permutation, incubation }: any) {
+  return <section className="grid"><Card className="span12"><h2>Shortlist da run</h2><p className="muted">Run analisada: <b>{currentRun || selectedRun || 'nenhuma'}</b>. Isto é research shortlist, não EA-ready. Para ficar EA-ready precisa de incubação/paper-forward.</p>{quickRun && <div className="warningInline"><b>Run Quick:</b> estes resultados são demasiado estreitos para avaliar mercado. Corre Balanced Research antes de julgar a estratégia.</div>}<select value={selectedRun} onChange={e => setSelectedRun(e.target.value)}><option value="">Último pipeline completo</option>{outputs.map((o: any) => <option key={o.name} value={o.name}>{o.name} — {o.candidate_count} candidatos / {o.all_count} testados</option>)}</select><ResultCards rows={finalCandidates}/></Card><StageSummary eventLab={eventLab} validation={validation} walkforward={walkforward} stress={stress} mc={mc} sensitivity={sensitivity} portfolio={portfolio} permutation={permutation} incubation={incubation}/><Card className="span12"><h2>Candidatos descobertos</h2><MiniTable rows={candidateRows} columns={['setup_id','symbol','tf','concept','session','lookback','rr','sl_mult','pf','test_pf','expR','maxDD_R','avg_cost_R','verdict']} tall/></Card><Card className="span12"><h2>Research details</h2><div className="twoCols"><div><h3>Event Lab</h3><MiniTable rows={eventLab?.top || []} columns={['setup_id','event_status','events','tp_first_pct','mean_forward_R','mean_mfe_R','mean_mae_R','verdict']}/></div><div><h3>Validation</h3><MiniTable rows={validation?.top || []} columns={['setup_id','robustness_status','robustness_score','pf','test_pf','expR','maxDD_R','verdict']}/></div><div><h3>Walk-forward</h3><MiniTable rows={walkforward?.top || []} columns={['setup_id','wf_status','wf_score','wf_pass_rate','wf_median_pf','wf_min_pf','wf_verdict']}/></div><div><h3>Stress</h3><MiniTable rows={stress?.top || []} columns={['setup_id','stress_status','stress_pass_rate','worst_test_pf','worst_maxDD_R','verdict']}/></div><div><h3>Monte Carlo</h3><MiniTable rows={mc?.top || []} columns={['setup_id','mc_status','mc_score','profit_probability','p05_totalR','p95_dd_R','ruin_probability','verdict']}/></div><div><h3>Sensitivity</h3><MiniTable rows={sensitivity?.top || []} columns={['setup_id','sensitivity_status','sensitivity_score','pass_rate','median_pf','min_pf','verdict']}/></div><div><h3>Portfolio</h3><MiniTable rows={portfolio?.top || []} columns={['setup_id','portfolio_status','portfolio_score','avg_abs_corr','standalone_monthly_dd_R','sumR','verdict']}/></div><div><h3>Permutation</h3><MiniTable rows={permutation?.top || []} columns={['setup_id','permutation_status','permutation_score','real_sumR','random_median_sumR','sumR_percentile','verdict']}/></div><div><h3>Incubation</h3><MiniTable rows={incubation?.top || []} columns={['setup_id','incubation_status','paper_days','paper_trades','paper_sumR','paper_maxDD_R','promotion_rule']}/></div></div></Card><Card className="span12"><h2>Todos os testes brutos</h2><MiniTable rows={allRows} columns={['setup_id','symbol','tf','concept','session','lookback','rr','sl_mult','status','pf','test_pf','expR','maxDD_R','score','verdict']} tall/></Card></section>
 }
 
 function ResultCards({ rows }: { rows: any[] }) {
