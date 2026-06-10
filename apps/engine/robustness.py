@@ -8,6 +8,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from pipeline_io import EDGE_COLUMNS, VALIDATION_COLUMNS, safe_read_csv, safe_to_csv
 from quantlab_core import OUTPUTS_DIR, row_setup_id
 
 VALIDATION_PATH = OUTPUTS_DIR / "latest_validation.json"
@@ -108,35 +109,15 @@ def _validate_row(row: dict) -> dict:
 
     return {
         "setup_id": row.get("setup_id") or row_setup_id(row),
-        "symbol": row.get("symbol", ""),
-        "tf": row.get("tf", ""),
-        "concept": row.get("concept", ""),
-        "lookback": row.get("lookback", ""),
-        "session": row.get("session", ""),
-        "rr": row.get("rr", ""),
-        "sl_mult": row.get("sl_mult", ""),
-        "grade": row.get("grade", ""),
-        "trades": n,
-        "n": n,
-        "pf": pf,
-        "test_pf": test_pf,
-        "expR": exp_r,
-        "maxDD_R": dd,
-        "winrate": winrate,
-        "positive_month_pct": positive_month_pct,
-        "loss_streak": loss_streak,
-        "max_loss_streak": loss_streak,
-        "avg_cost_R": _num(row.get("avg_cost_R"), 0),
-        "stress_pf": stress_pf,
-        "stress_test_pf": stress_test_pf,
-        "stress_expR": stress_exp_r,
-        "stress_maxDD_R": stress_dd,
-        "robustness_score": int(score),
-        "robustness_status": robustness,
-        "ea_ready": ea_ready,
+        "symbol": row.get("symbol", ""), "tf": row.get("tf", ""), "concept": row.get("concept", ""),
+        "lookback": row.get("lookback", ""), "session": row.get("session", ""), "rr": row.get("rr", ""), "sl_mult": row.get("sl_mult", ""),
+        "grade": row.get("grade", ""), "trades": n, "n": n, "pf": pf, "test_pf": test_pf, "expR": exp_r,
+        "maxDD_R": dd, "winrate": winrate, "positive_month_pct": positive_month_pct, "loss_streak": loss_streak,
+        "max_loss_streak": loss_streak, "avg_cost_R": _num(row.get("avg_cost_R"), 0),
+        "stress_pf": stress_pf, "stress_test_pf": stress_test_pf, "stress_expR": stress_exp_r, "stress_maxDD_R": stress_dd,
+        "robustness_score": int(score), "robustness_status": robustness, "ea_ready": ea_ready,
         "verdict": "; ".join(reasons) if reasons else "Passed Stage 2 first-pass robustness gate",
-        "strengths": "; ".join(strengths),
-        "ea_reason": ea_reason,
+        "strengths": "; ".join(strengths), "ea_reason": ea_reason,
     }
 
 
@@ -147,19 +128,16 @@ def run_validation(scan_name: str | None = None, logger: Callable[[str], None] =
         raise RuntimeError("No discovery run found. Run Discover Edges first.")
 
     cand_path = run_dir / "candidate_edges.csv"
-    if not cand_path.exists():
-        raise RuntimeError("No candidate_edges.csv found for this run.")
-
-    candidates = pd.read_csv(cand_path).replace([np.inf, -np.inf], np.nan).fillna("")
+    candidates = safe_read_csv(cand_path, EDGE_COLUMNS)
     logger(f"Validating {len(candidates)} candidate edges from {run_dir.name}")
 
     rows = [_validate_row(r) for r in candidates.to_dict("records")]
-    df = pd.DataFrame(rows).sort_values("robustness_score", ascending=False) if rows else pd.DataFrame()
+    df = pd.DataFrame(rows).sort_values("robustness_score", ascending=False) if rows else pd.DataFrame(columns=VALIDATION_COLUMNS)
     robust = df[df.robustness_status == "robust_candidate"] if not df.empty else pd.DataFrame()
     watch = df[df.robustness_status == "watchlist"] if not df.empty else pd.DataFrame()
     not_robust = df[df.robustness_status == "not_robust"] if not df.empty else pd.DataFrame()
 
-    df.to_csv(run_dir / "stage2_validation.csv", index=False)
+    df = safe_to_csv(df, run_dir / "stage2_validation.csv", VALIDATION_COLUMNS)
 
     summary = {
         "scan_name": run_dir.name,
@@ -170,8 +148,8 @@ def run_validation(scan_name: str | None = None, logger: Callable[[str], None] =
         "not_robust": int(len(not_robust)),
         "ea_ready": 0,
         "stage": "Stage 2 first-pass robustness gate",
-        "warning": "EA-ready remains 0 until true walk-forward, slippage/spread stress, Monte Carlo and forward paper tracking are implemented.",
-        "top": df.head(20).to_dict("records") if not df.empty else [],
+        "warning": "EA-ready remains 0 until true walk-forward, slippage/spread stress, Monte Carlo and forward paper tracking pass.",
+        "top": df.head(20).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not df.empty else [],
     }
 
     (run_dir / "VALIDATION_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
