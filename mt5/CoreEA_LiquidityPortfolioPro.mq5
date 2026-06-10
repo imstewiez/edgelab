@@ -16,6 +16,7 @@
 //| - Equal highs/lows                                                |
 //| - Sweep + reclaim                                                 |
 //| - Displacement confirmation                                       |
+//| - FVG / imbalance confirmation                                    |
 //| - Premium/discount location                                       |
 //| - Symbol-class adaptive profiles                                  |
 //| - Portfolio risk/correlation buckets                              |
@@ -24,7 +25,7 @@
 //| Strategy Tester can place simulated orders via ExecuteInTester.   |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.000"
+#property version   "1.100"
 #property description "CoreEA multi-symbol liquidity/pricing portfolio EA"
 
 #include <Trade/Trade.mqh>
@@ -32,16 +33,19 @@
 input bool   AllowLiveTrading        = false;
 input bool   ExecuteInTester         = true;
 input string InpSymbols              = "XAUUSD,EURUSD,GBPUSD,AUDUSD,NZDUSD,USDCAD,USDCHF,USDJPY,EURJPY,GBPJPY";
-input ENUM_TIMEFRAMES SignalTF       = PERIOD_M5;
+input ENUM_TIMEFRAMES SignalTF       = PERIOD_M15;
 input double BaseRiskPercent         = 0.25;
 input int    MagicBase               = 991000;
 input int    MaxPortfolioPositions   = 3;
 input int    MaxPositionsPerSymbol   = 1;
 input int    MaxPositionsPerBucket   = 1;
+input int    MaxTradesPerSymbolPerDay= 1;
 input bool   DebugSignals            = true;
 input string LogFileName             = "CoreEA_LiquidityPortfolioPro.csv";
 
-// Sessions use broker/server time.
+// Sessions use broker/server time plus SessionTimeShiftHours.
+// Example: if broker server is GMT+3 but you want the session model to behave like GMT+2, set -1.
+input int    SessionTimeShiftHours   = 0;
 input int    AsiaStartHour           = 0;
 input int    AsiaEndHour             = 7;
 input int    LondonStartHour         = 7;
@@ -62,7 +66,8 @@ input int    ATRPeriod               = 14;
 input int    SwingLookback           = 5;
 input bool   RequireDisplacement     = true;
 input bool   RequirePremiumDiscount  = true;
-input bool   RequireFVG              = false;
+input bool   RequireFVG              = true;
+input int    FVGSearchLookback       = 6;
 input int    PremiumDiscountLookback = 144;
 
 // Generic fallback execution parameters. Symbol profiles override these.
@@ -79,7 +84,8 @@ CTrade trade;
 string Symbols[];
 datetime LastBarTimes[];
 int AtrHandles[];
-datetime LastPoolDay[]; // indexed by symbol index * 8 + pool index
+datetime LastPoolDay[];        // indexed by symbol index * 8 + pool index
+datetime LastSymbolTradeDay[];  // hard daily symbol guard
 
 //+------------------------------------------------------------------+
 struct SymbolProfile
@@ -128,12 +134,14 @@ int OnInit()
    ArrayResize(LastBarTimes, n);
    ArrayResize(AtrHandles, n);
    ArrayResize(LastPoolDay, n * 8);
+   ArrayResize(LastSymbolTradeDay, n);
 
    for(int i = 0; i < n; i++)
    {
       Symbols[i] = Trim(Symbols[i]);
       SymbolSelect(Symbols[i], true);
       LastBarTimes[i] = 0;
+      LastSymbolTradeDay[i] = 0;
       AtrHandles[i] = iATR(Symbols[i], SignalTF, ATRPeriod);
       if(AtrHandles[i] == INVALID_HANDLE)
       {
@@ -146,7 +154,10 @@ int OnInit()
 
    trade.SetDeviationInPoints(30);
    EnsureLogHeader();
-   Print("CoreEA Liquidity Portfolio Pro initialized. Symbols=", n,
+   Print("CoreEA Liquidity Portfolio Pro initialized. Version=1.100 Symbols=", n,
+         " TF=", EnumToString(SignalTF),
+         " RequireFVG=", RequireFVG,
+         " SessionShift=", SessionTimeShiftHours,
          " AllowLiveTrading=", AllowLiveTrading,
          " ExecuteInTester=", ExecuteInTester,
          " MQL_TESTER=", (bool)MQLInfoInteger(MQL_TESTER));
@@ -197,6 +208,8 @@ void EvaluateSymbol(int idx)
    if(CountSymbolPositions(sym) >= MaxPositionsPerSymbol)
       return;
    if(CountBucketPositions(profile.bucket) >= MaxPositionsPerBucket)
+      return;
+   if(SymbolTradesToday(idx) >= MaxTradesPerSymbolPerDay)
       return;
 
    double atr = ATR(idx, 1);
@@ -305,7 +318,8 @@ void EvaluateSymbol(int idx)
 
    double tp = side == 1 ? entry + risk * profile.takeProfitR : entry - risk * profile.takeProfitR;
 
-   LastPoolDay[idx * 8 + poolId] = CurrentDayKey(sym);
+   LastPoolDay[idx * 8 + poolId] = CurrentSessionDayKey(sym);
+   LastSymbolTradeDay[idx] = CurrentSessionDayKey(sym);
    SendOrder(sym, setup, side, entry, sl, tp, risk, atr, spread, profile, sweptLevel, sweepExtreme);
 }
 
@@ -413,14 +427,14 @@ bool BuildLiquidityLevels(int idx, SymbolProfile &p, LiquidityLevels &lv)
    lv.equalHigh = FindEqualHigh(sym, idx);
    lv.equalLow = FindEqualLow(sym, idx);
 
-   datetime todayStart = DayStart(iTime(sym, SignalTF, 1));
+   datetime todayStart = DayStart(AdjustedTime(iTime(sym, SignalTF, 1)));
    for(int i = 1; i < 600; i++)
    {
       datetime bt = iTime(sym, SignalTF, i);
-      if(bt <= 0 || bt < todayStart)
+      if(bt <= 0 || AdjustedTime(bt) < todayStart)
          break;
       MqlDateTime dt;
-      TimeToStruct(bt, dt);
+      TimeToStruct(AdjustedTime(bt), dt);
       if(dt.hour >= AsiaStartHour && dt.hour < AsiaEndHour)
       {
          lv.asiaHigh = MathMax(lv.asiaHigh, iHigh(sym, SignalTF, i));
@@ -551,12 +565,19 @@ bool PassesPremiumDiscount(string sym, int side)
 //+------------------------------------------------------------------+
 bool HasFVG(string sym, int side)
 {
-   double high3 = iHigh(sym, SignalTF, 3);
-   double low3 = iLow(sym, SignalTF, 3);
-   double high1 = iHigh(sym, SignalTF, 1);
-   double low1 = iLow(sym, SignalTF, 1);
-   if(side == 1) return low1 > high3;
-   if(side == -1) return high1 < low3;
+   int maxLookback = MathMax(3, FVGSearchLookback);
+   for(int s = 1; s <= maxLookback; s++)
+   {
+      int far = s + 2;
+      double highFar = iHigh(sym, SignalTF, far);
+      double lowFar = iLow(sym, SignalTF, far);
+      double highRecent = iHigh(sym, SignalTF, s);
+      double lowRecent = iLow(sym, SignalTF, s);
+      if(side == 1 && lowRecent > highFar)
+         return true;
+      if(side == -1 && highRecent < lowFar)
+         return true;
+   }
    return false;
 }
 
@@ -591,7 +612,15 @@ void SendOrder(string sym, string setup, int side, double entry, double sl, doub
 //+------------------------------------------------------------------+
 bool PoolTradedToday(int idx, int pool)
 {
-   return LastPoolDay[idx * 8 + pool] == CurrentDayKey(Symbols[idx]);
+   return LastPoolDay[idx * 8 + pool] == CurrentSessionDayKey(Symbols[idx]);
+}
+
+//+------------------------------------------------------------------+
+int SymbolTradesToday(int idx)
+{
+   if(MaxTradesPerSymbolPerDay <= 0)
+      return 0;
+   return LastSymbolTradeDay[idx] == CurrentSessionDayKey(Symbols[idx]) ? 1 : 0;
 }
 
 //+------------------------------------------------------------------+
@@ -644,7 +673,7 @@ int CountBucketPositions(string bucket)
 //+------------------------------------------------------------------+
 bool InTradeWindow(string sym, SymbolProfile &p, int shift)
 {
-   datetime t = iTime(sym, SignalTF, shift);
+   datetime t = AdjustedTime(iTime(sym, SignalTF, shift));
    MqlDateTime dt;
    TimeToStruct(t, dt);
    if(dt.hour < p.tradeStartHour || dt.hour >= p.tradeEndHour) return false;
@@ -653,9 +682,15 @@ bool InTradeWindow(string sym, SymbolProfile &p, int shift)
 }
 
 //+------------------------------------------------------------------+
-datetime CurrentDayKey(string sym)
+datetime AdjustedTime(datetime t)
 {
-   return DayStart(iTime(sym, SignalTF, 1));
+   return t + SessionTimeShiftHours * 3600;
+}
+
+//+------------------------------------------------------------------+
+datetime CurrentSessionDayKey(string sym)
+{
+   return DayStart(AdjustedTime(iTime(sym, SignalTF, 1)));
 }
 
 //+------------------------------------------------------------------+
