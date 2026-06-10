@@ -10,6 +10,7 @@ import pandas as pd
 
 from pipeline_io import EDGE_COLUMNS, MC_COLUMNS, STRESS_COLUMNS, VALIDATION_COLUMNS, WF_COLUMNS, safe_read_csv, safe_to_csv
 from quantlab_core import OUTPUTS_DIR, HORIZON, backtest, feature_path, filter_by_setup_keys, row_setup_id, session_mask, signals
+from stage_limits import limit_candidates
 
 MONTE_CARLO_PATH = OUTPUTS_DIR / "latest_monte_carlo.json"
 
@@ -47,7 +48,7 @@ def _max_loss_streak(values: np.ndarray) -> int:
     return int(worst)
 
 
-def _simulate(R: np.ndarray, sims: int = 500, skip_prob: float = 0.03, slip_sigma: float = 0.035):
+def _simulate(R: np.ndarray, sims: int = 300, skip_prob: float = 0.03, slip_sigma: float = 0.035):
     rng = np.random.default_rng(42)
     totals, dds, streaks = [], [], []
     if len(R) == 0:
@@ -63,7 +64,7 @@ def _simulate(R: np.ndarray, sims: int = 500, skip_prob: float = 0.03, slip_sigm
     return {"median_totalR": round(float(np.median(totals)), 3), "p05_totalR": round(float(np.percentile(totals, 5)), 3), "p95_dd_R": round(float(np.percentile(dds, 95)), 3), "p99_dd_R": round(float(np.percentile(dds, 99)), 3), "p95_loss_streak": int(np.percentile(streaks, 95)), "profit_probability": round(float((totals > 0).mean()), 3), "ruin_probability": round(float((dds > 20).mean()), 3)}
 
 
-def _load_candidate_source(run_dir: Path) -> pd.DataFrame:
+def _load_candidate_source(run_dir: Path, logger: Callable[[str], None]) -> pd.DataFrame:
     source = safe_read_csv(run_dir / "candidate_edges.csv", EDGE_COLUMNS)
     if source.empty:
         return source
@@ -82,8 +83,8 @@ def _load_candidate_source(run_dir: Path) -> pd.DataFrame:
             gate = gate[gate[status_col].isin(allowed)]
         filtered = filter_by_setup_keys(source, gate)
         if len(filtered):
-            return filtered.head(80)
-    return source.head(80)
+            return limit_candidates(filtered, "monte_carlo", logger)
+    return limit_candidates(source, "monte_carlo", logger)
 
 
 def _row_monte_carlo(row: dict):
@@ -116,8 +117,8 @@ def run_monte_carlo(scan_name: str | None = None, logger: Callable[[str], None] 
     run_dir = OUTPUTS_DIR / scan_name if scan_name else _latest_output_dir()
     if not run_dir or not run_dir.exists():
         raise RuntimeError("No discovery run found. Run Discover Edges first.")
-    candidates = _load_candidate_source(run_dir)
-    logger(f"Monte Carlo testing {len(candidates)} candidates from {run_dir.name}")
+    candidates = _load_candidate_source(run_dir, logger)
+    logger(f"Monte Carlo testing {len(candidates)} ranked candidates from {run_dir.name}")
     rows = []
     for i, row in enumerate(candidates.to_dict("records"), 1):
         logger(f"[{i}/{len(candidates)}] MC {row.get('symbol','')} {row.get('tf','')} {row.get('concept','')}")
@@ -126,7 +127,7 @@ def run_monte_carlo(scan_name: str | None = None, logger: Callable[[str], None] 
             rows.append(out)
     df = pd.DataFrame(rows).sort_values("mc_score", ascending=False) if rows else pd.DataFrame(columns=MC_COLUMNS)
     df = safe_to_csv(df, run_dir / "stage5_monte_carlo.csv", MC_COLUMNS)
-    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(df)), "mc_pass": int((df.mc_status == "mc_pass").sum()) if not df.empty else 0, "mc_watchlist": int((df.mc_status == "mc_watchlist").sum()) if not df.empty else 0, "mc_fail": int((df.mc_status == "mc_fail").sum()) if not df.empty else 0, "ea_ready": 0, "stage": "Stage 5 Monte Carlo robustness", "warning": "Monte Carlo uses the exact setup_id trade R sequence from the current broker-aware OHLC backtest. It is a robustness gate, not live-proof.", "top": df.head(25).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not df.empty else []}
+    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(df)), "mc_pass": int((df.mc_status == "mc_pass").sum()) if not df.empty else 0, "mc_watchlist": int((df.mc_status == "mc_watchlist").sum()) if not df.empty else 0, "mc_fail": int((df.mc_status == "mc_fail").sum()) if not df.empty else 0, "ea_ready": 0, "stage": "Stage 5 ranked Monte Carlo robustness", "warning": "Monte Carlo is gated to ranked candidates and uses fewer sims for interactive speed. Use targeted/deep validation before live EA.", "top": df.head(25).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not df.empty else []}
     (run_dir / "MONTE_CARLO_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     MONTE_CARLO_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
