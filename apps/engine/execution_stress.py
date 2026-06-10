@@ -10,6 +10,7 @@ import pandas as pd
 
 from pipeline_io import EDGE_COLUMNS, STRESS_COLUMNS, VALIDATION_COLUMNS, WF_COLUMNS, safe_read_csv, safe_to_csv
 from quantlab_core import OUTPUTS_DIR, HORIZON, backtest, feature_path, row_setup_id, session_mask, signals, st
+from stage_limits import limit_candidates
 
 STRESS_PATH = OUTPUTS_DIR / "latest_execution_stress.json"
 
@@ -40,7 +41,7 @@ def _num(v, default=0.0):
         return default
 
 
-def _load_source(run_dir: Path) -> pd.DataFrame:
+def _load_source(run_dir: Path, logger: Callable[[str], None]) -> pd.DataFrame:
     for file_name, status_col, allowed, cols in [
         ("stage3_walkforward.csv", "wf_status", {"wf_pass", "wf_watchlist"}, WF_COLUMNS),
         ("stage2_validation.csv", "robustness_status", {"robust_candidate", "watchlist"}, VALIDATION_COLUMNS),
@@ -56,8 +57,7 @@ def _load_source(run_dir: Path) -> pd.DataFrame:
             preferred = df[df[status_col].isin(allowed)]
             if len(preferred):
                 df = preferred
-        if len(df):
-            return df.head(100)
+        return limit_candidates(df, "stress", logger)
     return pd.DataFrame(columns=EDGE_COLUMNS)
 
 
@@ -105,8 +105,8 @@ def run_execution_stress(scan_name: str | None = None, logger: Callable[[str], N
     run_dir = OUTPUTS_DIR / scan_name if scan_name else _latest_output_dir()
     if not run_dir or not run_dir.exists():
         raise RuntimeError("No discovery run found. Run Discover Edges first.")
-    df = _load_source(run_dir)
-    logger(f"Execution-stress testing {len(df)} candidates from {run_dir.name}")
+    df = _load_source(run_dir, logger)
+    logger(f"Execution-stress testing {len(df)} ranked candidates from {run_dir.name}")
     rows = []
     for i, row in enumerate(df.to_dict("records"), 1):
         logger(f"[{i}/{len(df)}] Stress {row.get('symbol','')} {row.get('tf','')} {row.get('concept','')}")
@@ -120,7 +120,7 @@ def run_execution_stress(scan_name: str | None = None, logger: Callable[[str], N
     passed = int((summary_df.stress_status == "stress_pass").sum()) if not summary_df.empty else 0
     watch = int((summary_df.stress_status == "stress_watchlist").sum()) if not summary_df.empty else 0
     failed = int((summary_df.stress_status == "stress_fail").sum()) if not summary_df.empty else 0
-    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(summary_df)), "stress_pass": passed, "stress_watchlist": watch, "stress_fail": failed, "ea_ready": 0, "stage": "Stage 4 broker-aware execution stress", "warning": "Uses actual spread_points when present, otherwise data/broker_profile.json or conservative defaults. Tick-level validation is still required before EA export.", "top": summary_df.head(25).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not summary_df.empty else [], "details": rows, "scenarios": SCENARIOS}
+    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(summary_df)), "stress_pass": passed, "stress_watchlist": watch, "stress_fail": failed, "ea_ready": 0, "stage": "Stage 4 ranked broker-aware execution stress", "warning": "Execution stress is gated to the best ranked candidates. Uses spread_points when present; tick-level validation is still required before EA export.", "top": summary_df.head(25).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not summary_df.empty else [], "details": rows, "scenarios": SCENARIOS}
     (run_dir / "EXECUTION_STRESS_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     STRESS_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
