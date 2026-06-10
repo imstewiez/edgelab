@@ -11,6 +11,7 @@ from quantlab_core import (
     list_outputs, read_edges_preview, read_report, read_edge_cards, read_data_health, clean_outputs
 )
 from execution_stress import read_execution_stress, run_execution_stress
+from monte_carlo import read_monte_carlo, run_monte_carlo
 from robustness import read_validation, run_validation
 from strategy_universe import get_strategy_universe
 from walkforward import read_walkforward, run_walkforward
@@ -118,6 +119,10 @@ def job_walkforward(payload: Dict[str, Any] | None = None):
 def job_execution_stress(payload: Dict[str, Any] | None = None):
     payload = payload or {}; scan_name = payload.get('scan_name') or None
     return start_locked('stage4_execution_stress', f'execution_stress:{scan_name or "latest"}', run_execution_stress, payload, scan_name=scan_name)
+@app.post('/api/jobs/monte-carlo')
+def job_monte_carlo(payload: Dict[str, Any] | None = None):
+    payload = payload or {}; scan_name = payload.get('scan_name') or None
+    return start_locked('stage5_monte_carlo', f'monte_carlo:{scan_name or "latest"}', run_monte_carlo, payload, scan_name=scan_name)
 
 @app.get('/api/jobs')
 def get_jobs():
@@ -140,6 +145,8 @@ def validation(scan_name: str | None = None): return read_validation(scan_name)
 def walkforward(scan_name: str | None = None): return read_walkforward(scan_name)
 @app.get('/api/execution-stress')
 def execution_stress(scan_name: str | None = None): return read_execution_stress(scan_name)
+@app.get('/api/monte-carlo')
+def monte_carlo(scan_name: str | None = None): return read_monte_carlo(scan_name)
 @app.get('/api/outputs/{scan_name}/edges')
 def output_edges(scan_name: str, kind: str='candidate', limit: int=100): return read_edges_preview(scan_name, kind, limit)
 @app.get('/api/outputs/{scan_name}/report')
