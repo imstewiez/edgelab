@@ -8,6 +8,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from pipeline_io import EDGE_COLUMNS, WF_COLUMNS, safe_read_csv, safe_to_csv
 from quantlab_core import OUTPUTS_DIR, HORIZON, backtest, feature_path, row_setup_id, session_mask, signals, st
 
 WALKFORWARD_PATH = OUTPUTS_DIR / "latest_walkforward.json"
@@ -102,10 +103,7 @@ def run_walkforward(scan_name: str | None = None, logger: Callable[[str], None] 
     run_dir = OUTPUTS_DIR / scan_name if scan_name else _latest_output_dir()
     if not run_dir or not run_dir.exists():
         raise RuntimeError("No discovery run found. Run Discover Edges first.")
-    cand_path = run_dir / "candidate_edges.csv"
-    if not cand_path.exists():
-        raise RuntimeError("No candidate_edges.csv found for this run.")
-    candidates = pd.read_csv(cand_path).replace([np.inf, -np.inf], np.nan).fillna("").head(80)
+    candidates = safe_read_csv(run_dir / "candidate_edges.csv", EDGE_COLUMNS).head(80)
     logger(f"Walk-forward validating {len(candidates)} candidates from {run_dir.name}")
     summary_rows = []
     details = {}
@@ -118,9 +116,9 @@ def run_walkforward(scan_name: str | None = None, logger: Callable[[str], None] 
         rows = _window_stats(pd.read_pickle(fp), row, windows=5)
         base = {"setup_id": setup_id, "symbol": symbol, "tf": tf, "concept": concept, "lookback": row.get("lookback", ""), "session": row.get("session", ""), "rr": row.get("rr", ""), "sl_mult": row.get("sl_mult", ""), "n": row.get("n", ""), "pf": row.get("pf", ""), "test_pf": row.get("test_pf", ""), "expR": row.get("expR", ""), "maxDD_R": row.get("maxDD_R", ""), "positive_month_pct": row.get("positive_month_pct", ""), "avg_cost_R": row.get("avg_cost_R", "")}
         base.update(_grade_walkforward(rows)); summary_rows.append(base); details[setup_id] = rows
-    out = pd.DataFrame(summary_rows).sort_values("wf_score", ascending=False) if summary_rows else pd.DataFrame()
-    out.to_csv(run_dir / "stage3_walkforward.csv", index=False)
-    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(out)), "wf_pass": int((out.wf_status == "wf_pass").sum()) if not out.empty else 0, "wf_watchlist": int((out.wf_status == "wf_watchlist").sum()) if not out.empty else 0, "wf_fail": int((out.wf_status == "wf_fail").sum()) if not out.empty else 0, "ea_ready": 0, "stage": "Stage 3 first-pass walk-forward matrix", "warning": "This is a first walk-forward gate. EA-ready remains 0 until spread/slippage, Monte Carlo and live-forward paper tracking pass.", "top": out.head(25).to_dict("records") if not out.empty else [], "details": details}
+    out = pd.DataFrame(summary_rows).sort_values("wf_score", ascending=False) if summary_rows else pd.DataFrame(columns=WF_COLUMNS)
+    out = safe_to_csv(out, run_dir / "stage3_walkforward.csv", WF_COLUMNS)
+    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(out)), "wf_pass": int((out.wf_status == "wf_pass").sum()) if not out.empty else 0, "wf_watchlist": int((out.wf_status == "wf_watchlist").sum()) if not out.empty else 0, "wf_fail": int((out.wf_status == "wf_fail").sum()) if not out.empty else 0, "ea_ready": 0, "stage": "Stage 3 first-pass walk-forward matrix", "warning": "This is a first walk-forward gate. EA-ready remains 0 until spread/slippage, Monte Carlo and live-forward paper tracking pass.", "top": out.head(25).replace([np.inf, -np.inf], np.nan).fillna("").to_dict("records") if not out.empty else [], "details": details}
     (run_dir / "WALKFORWARD_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     WALKFORWARD_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
