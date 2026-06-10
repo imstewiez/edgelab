@@ -8,18 +8,18 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from quantlab_core import OUTPUTS_DIR
+from quantlab_core import OUTPUTS_DIR, HORIZON, backtest, feature_path, row_setup_id, session_mask, signals, st
 
 STRESS_PATH = OUTPUTS_DIR / "latest_execution_stress.json"
 
 SCENARIOS = [
-    {"name": "base", "pf_mult": 1.00, "exp_mult": 1.00, "dd_mult": 1.00, "note": "Original discovery result"},
-    {"name": "spread_x2", "pf_mult": 0.92, "exp_mult": 0.86, "dd_mult": 1.08, "note": "Spread roughly doubled"},
-    {"name": "spread_x3", "pf_mult": 0.84, "exp_mult": 0.74, "dd_mult": 1.18, "note": "Spread roughly tripled"},
-    {"name": "slippage_light", "pf_mult": 0.90, "exp_mult": 0.82, "dd_mult": 1.12, "note": "Light adverse slippage"},
-    {"name": "slippage_heavy", "pf_mult": 0.78, "exp_mult": 0.62, "dd_mult": 1.32, "note": "Heavy adverse slippage"},
-    {"name": "entry_delay", "pf_mult": 0.88, "exp_mult": 0.78, "dd_mult": 1.15, "note": "Entry delayed / missed ideal fill"},
-    {"name": "combined_bad_fill", "pf_mult": 0.70, "exp_mult": 0.52, "dd_mult": 1.55, "note": "Worse spread + slippage + delayed fill"},
+    {"name": "base", "spread_mult": 1.00, "slippage_mult": 1.00, "entry_delay": 0, "note": "Broker/profile cost model using available spread data"},
+    {"name": "spread_x2", "spread_mult": 2.00, "slippage_mult": 1.00, "entry_delay": 0, "note": "Spread doubled"},
+    {"name": "spread_x3", "spread_mult": 3.00, "slippage_mult": 1.00, "entry_delay": 0, "note": "Spread tripled"},
+    {"name": "slippage_light", "spread_mult": 1.00, "slippage_mult": 2.00, "entry_delay": 0, "note": "Light adverse slippage"},
+    {"name": "slippage_heavy", "spread_mult": 1.25, "slippage_mult": 4.00, "entry_delay": 0, "note": "Heavy adverse slippage"},
+    {"name": "entry_delay", "spread_mult": 1.00, "slippage_mult": 1.50, "entry_delay": 1, "note": "Entry delayed by one bar"},
+    {"name": "combined_bad_fill", "spread_mult": 2.00, "slippage_mult": 4.00, "entry_delay": 1, "note": "Worse spread + slippage + delayed fill"},
 ]
 
 
@@ -39,73 +39,75 @@ def _num(v, default=0.0):
         return default
 
 
+def _load_source(run_dir: Path) -> pd.DataFrame:
+    for file_name, status_col, allowed in [
+        ("stage3_walkforward.csv", "wf_status", {"wf_pass", "wf_watchlist"}),
+        ("stage2_validation.csv", "robustness_status", {"robust_candidate", "watchlist"}),
+        ("candidate_edges.csv", "status", {"candidate"}),
+    ]:
+        p = run_dir / file_name
+        if not p.exists():
+            continue
+        df = pd.read_csv(p).replace([np.inf, -np.inf], np.nan).fillna("")
+        if status_col in df.columns:
+            preferred = df[df[status_col].isin(allowed)]
+            if len(preferred):
+                df = preferred
+        if len(df):
+            return df.head(100)
+    raise RuntimeError("No candidates found. Run Discover Edges first.")
+
+
+def _delayed_signals(buy: pd.Series, sell: pd.Series, bars: int) -> tuple[pd.Series, pd.Series]:
+    if bars <= 0:
+        return buy, sell
+    return buy.shift(bars).fillna(False), sell.shift(bars).fillna(False)
+
+
+def _scenario_backtest(row: dict, scenario: dict) -> dict:
+    symbol = str(row.get("symbol"))
+    tf = str(row.get("tf"))
+    concept = str(row.get("concept"))
+    lookback = int(_num(row.get("lookback"), 20))
+    session = str(row.get("session", "all"))
+    rr = _num(row.get("rr"), 1.0)
+    sl_mult = _num(row.get("sl_mult"), 1.0)
+    fp = feature_path(symbol, tf)
+    if not fp.exists():
+        return {"scenario": scenario["name"], "pf": 0, "test_pf": 0, "expR": 0, "maxDD_R": 999, "trades": 0, "avg_cost_R": 0, "passed": False, "note": "Feature cache missing"}
+    df = pd.read_pickle(fp)
+    b0, s0 = signals(df, concept, lookback)
+    b0, s0 = _delayed_signals(b0, s0, int(scenario.get("entry_delay", 0)))
+    sm = session_mask(df, session)
+    trades = backtest(df, b0 & sm, s0 & sm, rr, sl_mult, HORIZON.get(tf, 48), symbol=symbol, spread_mult=float(scenario.get("spread_mult", 1.0)), slippage_mult=float(scenario.get("slippage_mult", 1.0)))
+    base = st(trades)
+    if not base:
+        return {"scenario": scenario["name"], "pf": 0, "test_pf": 0, "expR": 0, "maxDD_R": 999, "trades": 0, "avg_cost_R": 0, "passed": False, "note": scenario["note"]}
+    split = max(1, int(len(trades) * 0.7))
+    test = st(trades.iloc[split:]) or {}
+    passed = base["pf"] >= 1.10 and _num(test.get("pf"), base["pf"]) >= 1.00 and base["expR"] > 0 and base["maxDD_R"] <= 18
+    return {"scenario": scenario["name"], "pf": base["pf"], "test_pf": test.get("pf", base["pf"]), "expR": base["expR"], "maxDD_R": base["maxDD_R"], "trades": base["n"], "avg_cost_R": round(float(trades.cost_r.mean()), 5) if not trades.empty and "cost_r" in trades else 0, "passed": bool(passed), "note": scenario["note"]}
+
+
 def _stress_row(row: dict) -> dict:
-    pf = _num(row.get("pf"), 0)
-    test_pf = _num(row.get("test_pf"), pf)
-    exp_r = _num(row.get("expR"), 0)
-    dd = _num(row.get("maxDD_R"), 999)
-    trades = int(_num(row.get("n"), row.get("trades", 0)))
-
-    scenario_rows = []
-    failures = []
-    pass_count = 0
-
-    for s in SCENARIOS:
-        spf = round(pf * s["pf_mult"], 3)
-        stpf = round(test_pf * s["pf_mult"], 3)
-        sexp = round(exp_r * s["exp_mult"], 4)
-        sdd = round(dd * s["dd_mult"], 3)
-        passed = spf >= 1.10 and stpf >= 1.00 and sexp > 0 and sdd <= 18
-        if passed:
-            pass_count += 1
-        else:
-            failures.append(s["name"])
-        scenario_rows.append({
-            "scenario": s["name"],
-            "pf": spf,
-            "test_pf": stpf,
-            "expR": sexp,
-            "maxDD_R": sdd,
-            "passed": passed,
-            "note": s["note"],
-        })
-
+    scenario_rows = [_scenario_backtest(row, s) for s in SCENARIOS]
+    pass_count = sum(1 for x in scenario_rows if x["passed"])
+    failures = [x["scenario"] for x in scenario_rows if not x["passed"]]
     pass_rate = pass_count / len(SCENARIOS)
-    worst = min(scenario_rows, key=lambda x: x["test_pf"])
-    worst_dd = max(x["maxDD_R"] for x in scenario_rows)
+    worst = min(scenario_rows, key=lambda x: _num(x.get("test_pf"), 0))
+    worst_dd = max(_num(x.get("maxDD_R"), 999) for x in scenario_rows)
+    base = scenario_rows[0]
 
-    if pass_rate >= 0.86 and worst["test_pf"] >= 1.05:
+    if pass_rate >= 0.86 and _num(worst.get("test_pf"), 0) >= 1.05:
         status = "stress_pass"
     elif pass_rate >= 0.58:
         status = "stress_watchlist"
     else:
         status = "stress_fail"
 
-    verdict = "Survives first execution stress gate" if status == "stress_pass" else f"Fails or weak under: {', '.join(failures[:4])}"
+    verdict = "Survives broker-aware execution stress gate" if status == "stress_pass" else f"Fails or weak under: {', '.join(failures[:4])}"
 
-    return {
-        "symbol": row.get("symbol", ""),
-        "tf": row.get("tf", ""),
-        "concept": row.get("concept", ""),
-        "session": row.get("session", ""),
-        "rr": row.get("rr", ""),
-        "sl_mult": row.get("sl_mult", ""),
-        "trades": trades,
-        "base_pf": pf,
-        "base_test_pf": test_pf,
-        "base_expR": exp_r,
-        "base_maxDD_R": dd,
-        "stress_status": status,
-        "stress_pass_rate": round(pass_rate, 3),
-        "stress_passed_scenarios": pass_count,
-        "stress_total_scenarios": len(SCENARIOS),
-        "worst_test_pf": worst["test_pf"],
-        "worst_maxDD_R": worst_dd,
-        "verdict": verdict,
-        "scenarios": scenario_rows,
-        "ea_ready": False,
-        "ea_reason": "Not EA-ready yet: needs Monte Carlo, portfolio heat and forward paper tracking after execution stress.",
-    }
+    return {"setup_id": row.get("setup_id") or row_setup_id(row), "symbol": row.get("symbol", ""), "tf": row.get("tf", ""), "concept": row.get("concept", ""), "lookback": row.get("lookback", ""), "session": row.get("session", ""), "rr": row.get("rr", ""), "sl_mult": row.get("sl_mult", ""), "trades": int(_num(base.get("trades"), _num(row.get("n"), row.get("trades", 0)))), "base_pf": base.get("pf", row.get("pf", 0)), "base_test_pf": base.get("test_pf", row.get("test_pf", 0)), "base_expR": base.get("expR", row.get("expR", 0)), "base_maxDD_R": base.get("maxDD_R", row.get("maxDD_R", 999)), "base_avg_cost_R": base.get("avg_cost_R", row.get("avg_cost_R", 0)), "pf": base.get("pf", row.get("pf", 0)), "test_pf": base.get("test_pf", row.get("test_pf", 0)), "expR": base.get("expR", row.get("expR", 0)), "maxDD_R": base.get("maxDD_R", row.get("maxDD_R", 999)), "stress_status": status, "stress_pass_rate": round(pass_rate, 3), "stress_passed_scenarios": pass_count, "stress_total_scenarios": len(SCENARIOS), "worst_test_pf": worst["test_pf"], "worst_maxDD_R": worst_dd, "verdict": verdict, "scenarios": scenario_rows, "ea_ready": False, "ea_reason": "Not EA-ready yet: needs Monte Carlo, portfolio heat and forward paper tracking after execution stress."}
 
 
 def run_execution_stress(scan_name: str | None = None, logger: Callable[[str], None] = print):
@@ -114,25 +116,7 @@ def run_execution_stress(scan_name: str | None = None, logger: Callable[[str], N
     if not run_dir or not run_dir.exists():
         raise RuntimeError("No discovery run found. Run Discover Edges first.")
 
-    source = run_dir / "stage3_walkforward.csv"
-    if not source.exists():
-        source = run_dir / "stage2_validation.csv"
-    if not source.exists():
-        source = run_dir / "candidate_edges.csv"
-    if not source.exists():
-        raise RuntimeError("No candidates found. Run Discover Edges first.")
-
-    df = pd.read_csv(source).replace([np.inf, -np.inf], np.nan).fillna("")
-    if "wf_status" in df.columns:
-        preferred = df[df.wf_status.isin(["wf_pass", "wf_watchlist"])]
-        if len(preferred):
-            df = preferred
-    elif "robustness_status" in df.columns:
-        preferred = df[df.robustness_status.isin(["robust_candidate", "watchlist"])]
-        if len(preferred):
-            df = preferred
-
-    df = df.head(100)
+    df = _load_source(run_dir)
     logger(f"Execution-stress testing {len(df)} candidates from {run_dir.name}")
 
     rows = []
@@ -142,28 +126,16 @@ def run_execution_stress(scan_name: str | None = None, logger: Callable[[str], N
 
     summary_df = pd.DataFrame([{k: v for k, v in r.items() if k != "scenarios"} for r in rows])
     if not summary_df.empty:
-        summary_df = summary_df.sort_values(["stress_status", "stress_pass_rate", "worst_test_pf"], ascending=[True, False, False])
+        status_order = {"stress_pass": 0, "stress_watchlist": 1, "stress_fail": 2}
+        summary_df["_status_order"] = summary_df.stress_status.map(status_order).fillna(9)
+        summary_df = summary_df.sort_values(["_status_order", "stress_pass_rate", "worst_test_pf"], ascending=[True, False, False]).drop(columns=["_status_order"])
     summary_df.to_csv(run_dir / "stage4_execution_stress.csv", index=False)
 
     passed = int((summary_df.stress_status == "stress_pass").sum()) if not summary_df.empty else 0
     watch = int((summary_df.stress_status == "stress_watchlist").sum()) if not summary_df.empty else 0
     failed = int((summary_df.stress_status == "stress_fail").sum()) if not summary_df.empty else 0
 
-    summary = {
-        "scan_name": run_dir.name,
-        "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "candidates_checked": int(len(summary_df)),
-        "stress_pass": passed,
-        "stress_watchlist": watch,
-        "stress_fail": failed,
-        "ea_ready": 0,
-        "stage": "Stage 4 execution stress",
-        "warning": "This uses conservative scenario approximations from available backtest stats. True broker-level realism needs tick/spread history and live-forward tracking.",
-        "top": summary_df.head(25).to_dict("records") if not summary_df.empty else [],
-        "details": rows,
-        "scenarios": SCENARIOS,
-    }
-
+    summary = {"scan_name": run_dir.name, "validated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "candidates_checked": int(len(summary_df)), "stress_pass": passed, "stress_watchlist": watch, "stress_fail": failed, "ea_ready": 0, "stage": "Stage 4 broker-aware execution stress", "warning": "Uses actual spread_points when present, otherwise data/broker_profile.json or conservative defaults. Tick-level validation is still required before EA export.", "top": summary_df.head(25).to_dict("records") if not summary_df.empty else [], "details": rows, "scenarios": SCENARIOS}
     (run_dir / "EXECUTION_STRESS_SUMMARY.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     STRESS_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
@@ -176,12 +148,4 @@ def read_execution_stress(scan_name: str | None = None):
             return json.loads(p.read_text(encoding="utf-8"))
     if STRESS_PATH.exists():
         return json.loads(STRESS_PATH.read_text(encoding="utf-8"))
-    return {
-        "candidates_checked": 0,
-        "stress_pass": 0,
-        "stress_watchlist": 0,
-        "stress_fail": 0,
-        "ea_ready": 0,
-        "top": [],
-        "warning": "No execution stress run yet.",
-    }
+    return {"candidates_checked": 0, "stress_pass": 0, "stress_watchlist": 0, "stress_fail": 0, "ea_ready": 0, "top": [], "warning": "No execution stress run yet."}
