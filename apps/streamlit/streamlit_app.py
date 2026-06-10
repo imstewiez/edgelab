@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,12 +14,14 @@ OUTPUTS = DATA / "outputs"
 sys.path.insert(0, str(ENGINE))
 
 try:
-    from quantlab_core import build_features, import_raw_data, list_outputs, read_data_health
+    from quantlab_core import STORE, build_features, import_raw_data, list_outputs, read_data_health
     from discovery_fast import discover_edges
-    from inefficiency_lab import read_inefficiency_lab, run_inefficiency_lab
+    from inefficiency_lab import run_inefficiency_lab
 except Exception as exc:  # pragma: no cover
     st.error(f"Could not import EdgeLab engine modules: {exc}")
     st.stop()
+
+INCUBATION_TRACKER = STORE / "incubation" / "incubation_candidates.csv"
 
 st.set_page_config(page_title="CoreEA EdgeLab Streamlit", layout="wide", page_icon="🧪")
 st.title("🧪 CoreEA EdgeLab — Python Research Dashboard")
@@ -32,11 +32,6 @@ def read_csv(path: Path) -> pd.DataFrame:
     if not path.exists() or path.stat().st_size == 0:
         return pd.DataFrame()
     return pd.read_csv(path).replace([float("inf"), float("-inf")], pd.NA).fillna("")
-
-
-def latest_run() -> str:
-    outs = list_outputs()
-    return outs[0]["name"] if outs else ""
 
 
 def run_dir(name: str) -> Path:
@@ -78,6 +73,8 @@ def add_account_examples(df: pd.DataFrame, account: float, risk_pct: float) -> p
         dd_col = "standalone_monthly_dd_R"
     elif "p95_dd_R" in out.columns:
         dd_col = "p95_dd_R"
+    elif "paper_maxDD_R" in out.columns:
+        dd_col = "paper_maxDD_R"
     else:
         dd_col = None
     if r_col:
@@ -137,7 +134,8 @@ stress = read_csv(rd / "stage4_execution_stress.csv")
 mc = read_csv(rd / "stage5_monte_carlo.csv")
 portfolio = read_csv(rd / "stage7_portfolio_risk.csv")
 perm = read_csv(rd / "stage8_permutation_test.csv")
-incubation = read_csv(rd / "incubation.csv")
+incubation_all = read_csv(INCUBATION_TRACKER)
+incubation = incubation_all[incubation_all.scan_name.astype(str) == selected_run].copy() if not incubation_all.empty and "scan_name" in incubation_all.columns else incubation_all
 ineff = read_csv(rd / "inefficiency_lab.csv")
 
 st.subheader(f"Run: {selected_run}")
@@ -159,7 +157,7 @@ with tabs[0]:
     if source.empty:
         st.info("No shortlist rows yet.")
     else:
-        show_cols = [c for c in ["setup_id", "symbol", "tf", "concept", "session", "pf", "test_pf", "score", "robustness_score", "wf_score", "stress_status", "mc_score", "portfolio_score", "permutation_score", "sumR", "real_sumR", "maxDD_R", "standalone_monthly_dd_R", "p95_dd_R", "example_profit_eur", "example_dd_eur", "verdict", "promotion_rule"] if c in source.columns]
+        show_cols = [c for c in ["setup_id", "symbol", "tf", "concept", "session", "pf", "test_pf", "score", "robustness_score", "wf_score", "stress_status", "mc_score", "portfolio_score", "permutation_score", "sumR", "real_sumR", "maxDD_R", "standalone_monthly_dd_R", "p95_dd_R", "paper_sumR", "paper_maxDD_R", "example_profit_eur", "example_dd_eur", "verdict", "paper_notes", "promotion_rule"] if c in source.columns]
         st.dataframe(source[show_cols].head(50), use_container_width=True, height=520)
         if "example_profit_eur" in source.columns or "example_dd_eur" in source.columns:
             st.success(f"Example uses account {fmt_money(account_size)} and {risk_pct:.1f}% risk/trade. 1R = {fmt_money(account_size * risk_pct / 100)}.")
