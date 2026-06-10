@@ -7,7 +7,7 @@
 //| paper-forward evidence is collected.                              |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.000"
+#property version   "1.001"
 #property description "AUDUSD M5 compression breakout paper-forward tracker"
 
 #include <Trade/Trade.mqh>
@@ -37,11 +37,11 @@ datetime lastBarTime = 0;
 bool paperOpen = false;
 int paperSide = 0;
 datetime paperEntryTime = 0;
+datetime paperEntryBarTime = 0;
 double paperEntry = 0.0;
 double paperSL = 0.0;
 double paperTP = 0.0;
 double paperRisk = 0.0;
-int paperBarsHeld = 0;
 
 int atrHandle = INVALID_HANDLE;
 int ema21Handle = INVALID_HANDLE;
@@ -247,12 +247,26 @@ void OpenPaper(int side, double entry, double sl, double tp, double risk)
    paperOpen = true;
    paperSide = side;
    paperEntryTime = TimeCurrent();
+   paperEntryBarTime = iTime(TradeSymbol, SignalTF, 0);
    paperEntry = entry;
    paperSL = sl;
    paperTP = tp;
    paperRisk = risk;
-   paperBarsHeld = 0;
    LogEvent("PAPER_OPEN", side == 1 ? "long" : "short", entry, sl, tp, BufferValue(atrHandle, 1), (int)SymbolInfoInteger(TradeSymbol, SYMBOL_SPREAD), 0.0, "paper_trade_opened");
+}
+
+//+------------------------------------------------------------------+
+int PaperBarsHeld()
+{
+   if(paperEntryBarTime <= 0)
+      return 0;
+   int shift = iBarShift(TradeSymbol, SignalTF, paperEntryBarTime, false);
+   if(shift >= 0)
+      return shift;
+   int seconds = PeriodSeconds(SignalTF);
+   if(seconds <= 0)
+      seconds = 300;
+   return (int)((TimeCurrent() - paperEntryTime) / seconds);
 }
 
 //+------------------------------------------------------------------+
@@ -260,25 +274,23 @@ void ManagePaperTrade()
 {
    if(!paperOpen) return;
 
-   paperBarsHeld++;
    double bid = SymbolInfoDouble(TradeSymbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(TradeSymbol, SYMBOL_ASK);
-   double hi = iHigh(TradeSymbol, SignalTF, 0);
-   double lo = iLow(TradeSymbol, SignalTF, 0);
    double exitPrice = 0.0;
    string reason = "";
+   int barsHeld = PaperBarsHeld();
 
    if(paperSide == 1)
    {
-      if(lo <= paperSL) { exitPrice = paperSL; reason = "paper_sl"; }
-      else if(hi >= paperTP) { exitPrice = paperTP; reason = "paper_tp"; }
-      else if(paperBarsHeld >= MaxBarsHold) { exitPrice = bid; reason = "paper_timeout"; }
+      if(bid <= paperSL) { exitPrice = paperSL; reason = "paper_sl"; }
+      else if(bid >= paperTP) { exitPrice = paperTP; reason = "paper_tp"; }
+      else if(barsHeld >= MaxBarsHold) { exitPrice = bid; reason = StringFormat("paper_timeout_%d_bars", barsHeld); }
    }
    else if(paperSide == -1)
    {
-      if(hi >= paperSL) { exitPrice = paperSL; reason = "paper_sl"; }
-      else if(lo <= paperTP) { exitPrice = paperTP; reason = "paper_tp"; }
-      else if(paperBarsHeld >= MaxBarsHold) { exitPrice = ask; reason = "paper_timeout"; }
+      if(ask >= paperSL) { exitPrice = paperSL; reason = "paper_sl"; }
+      else if(ask <= paperTP) { exitPrice = paperTP; reason = "paper_tp"; }
+      else if(barsHeld >= MaxBarsHold) { exitPrice = ask; reason = StringFormat("paper_timeout_%d_bars", barsHeld); }
    }
 
    if(reason == "") return;
@@ -287,6 +299,7 @@ void ManagePaperTrade()
    LogEvent("PAPER_CLOSE", paperSide == 1 ? "long" : "short", paperEntry, paperSL, paperTP, BufferValue(atrHandle, 1), (int)SymbolInfoInteger(TradeSymbol, SYMBOL_SPREAD), r, reason);
    paperOpen = false;
    paperSide = 0;
+   paperEntryBarTime = 0;
 }
 
 //+------------------------------------------------------------------+
