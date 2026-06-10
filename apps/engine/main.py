@@ -30,7 +30,7 @@ from sensitivity import read_sensitivity, run_sensitivity
 from strategy_universe import get_strategy_universe
 from walkforward import read_walkforward, run_walkforward
 
-app = FastAPI(title="CoreEA EdgeLab v1 Engine", version="1.2.2-quick-research-lab")
+app = FastAPI(title="CoreEA EdgeLab v1 Engine", version="1.2.3-balanced-research-lab")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -46,7 +46,7 @@ jobs_lock = threading.Lock()
 PIPELINE_STEPS = [
     ("import", "Import raw data"),
     ("features", "Build feature cache"),
-    ("discover", "Quick strategy discovery"),
+    ("discover", "Balanced multi-concept discovery"),
     ("event_lab", "Event/feature/outcome lab"),
     ("validate", "Robustness validation"),
     ("walkforward", "Walk-forward matrix"),
@@ -103,17 +103,27 @@ def _safe_extract_zip(zip_path: Path, target_dir: Path) -> list[str]:
     return extracted
 
 
-def run_scan_only(name, mode="quick", symbols="", tfs="", logger=print):
-    return run_fast_discovery(name=name, mode=mode or "quick", symbols=symbols, tfs=tfs, logger=logger)
+def normalize_mode(mode: str | None) -> str:
+    mode = str(mode or "balanced").lower().strip()
+    if mode in {"auto", "priority", "efficient", "fast", ""}:
+        return "balanced"
+    if mode not in {"quick", "balanced", "deep", "broad", "exhaustive", "htf", "intraday"}:
+        return "balanced"
+    return mode
 
 
-def run_auto_discovery(mode="quick", symbols="", tfs="", logger=print):
+def run_scan_only(name, mode="balanced", symbols="", tfs="", logger=print):
+    return run_fast_discovery(name=name, mode=normalize_mode(mode), symbols=symbols, tfs=tfs, logger=logger)
+
+
+def run_auto_discovery(mode="balanced", symbols="", tfs="", logger=print):
+    mode = normalize_mode(mode)
     logger("Step 1/3: Importing data")
     import_raw_data(logger)
     logger("Step 2/3: Building features")
     build_features(logger)
-    logger("Step 3/3: Quick discovery")
-    return run_scan_only(f"auto_discovery_{time.strftime('%Y%m%d_%H%M%S')}", mode="quick" if mode in {"auto", "priority", "efficient", ""} else mode, symbols=symbols, tfs=tfs, logger=logger)
+    logger(f"Step 3/3: {mode.title()} discovery")
+    return run_scan_only(f"auto_discovery_{time.strftime('%Y%m%d_%H%M%S')}", mode=mode, symbols=symbols, tfs=tfs, logger=logger)
 
 
 def create_or_reuse_job(kind: str, lock_key: str, payload: Optional[dict] = None, steps: Optional[list[dict]] = None):
@@ -154,7 +164,7 @@ def update_pipeline_step(jid: str, step_id: str, status: str, percent: int, stag
         jobs[jid]["updated_at"] = now()
 
 
-def pipeline_logger(jid: str, step_id: str | None = None, base_pct: int | None = None, end_pct: int | None = None):
+def pipeline_logger(jid: str, step_id: str | None = None, base_pct: int | None = None, end_pct: int | None = None, mode: str = "balanced"):
     def _log(msg: str):
         log_job(jid, msg)
         if step_id == "discover" and base_pct is not None and end_pct is not None:
@@ -162,9 +172,9 @@ def pipeline_logger(jid: str, step_id: str | None = None, base_pct: int | None =
             if m:
                 cur, total = int(m.group(1)), max(1, int(m.group(2)))
                 pct = base_pct + int((end_pct - base_pct) * min(cur, total) / total)
-                update_pipeline_step(jid, step_id, "running", pct, f"Quick discovery {cur}/{total}")
+                update_pipeline_step(jid, step_id, "running", pct, f"{mode.title()} discovery {cur}/{total}")
             elif "complete" in msg.lower() or "cap reached" in msg.lower():
-                update_pipeline_step(jid, step_id, "running", end_pct, "Quick discovery finishing")
+                update_pipeline_step(jid, step_id, "running", end_pct, f"{mode.title()} discovery finishing")
     return _log
 
 
@@ -194,17 +204,15 @@ def start_locked(kind: str, lock_key: str, fn, payload: Optional[dict] = None, *
 def run_full_pipeline_job(jid: str, payload: dict):
     lock_key = jobs.get(jid, {}).get("lock_key")
     scan_name = payload.get("scan_name") or f"pipeline_{time.strftime('%Y%m%d_%H%M%S')}"
-    mode = payload.get("mode", "quick")
-    if mode in {"auto", "priority", "efficient", "fast", ""}:
-        mode = "quick"
+    mode = normalize_mode(payload.get("mode", "balanced"))
     symbols = payload.get("symbols", "")
     tfs = payload.get("tfs", "")
     try:
-        update_job(jid, status="running", percent=1, stage="Starting quick full pipeline")
+        update_job(jid, status="running", percent=1, stage=f"Starting {mode} full pipeline")
         steps = [
-            ("import", 5,  lambda: import_raw_data(pipeline_logger(jid))),
+            ("import", 5, lambda: import_raw_data(pipeline_logger(jid))),
             ("features", 12, lambda: build_features(pipeline_logger(jid))),
-            ("discover", 28, lambda: run_scan_only(scan_name, mode=mode, symbols=symbols, tfs=tfs, logger=pipeline_logger(jid, "discover", 13, 28))),
+            ("discover", 28, lambda: run_scan_only(scan_name, mode=mode, symbols=symbols, tfs=tfs, logger=pipeline_logger(jid, "discover", 13, 28, mode=mode))),
             ("event_lab", 36, lambda: run_event_lab(scan_name=scan_name, logger=pipeline_logger(jid))),
             ("validate", 45, lambda: run_validation(scan_name=scan_name, logger=pipeline_logger(jid))),
             ("walkforward", 55, lambda: run_walkforward(scan_name=scan_name, logger=pipeline_logger(jid))),
@@ -240,7 +248,7 @@ def startup(): ensure_store()
 @app.get("/health")
 def health():
     ensure_store()
-    return {"ok": True, "version": "1.2.2-quick-research-lab", "store": str(STORE.resolve()), "active_locks": job_locks}
+    return {"ok": True, "version": "1.2.3-balanced-research-lab", "store": str(STORE.resolve()), "active_locks": job_locks}
 
 
 @app.get("/api/strategy-universe")
@@ -283,18 +291,18 @@ def job_import(): return start_locked("import", "import", import_raw_data)
 def job_features(): return start_locked("features", "features", build_features)
 @app.post("/api/jobs/discover")
 def job_discover(payload: Dict[str, Any] | None = None):
-    payload = payload or {}; mode = payload.get("mode", "quick"); symbols = payload.get("symbols", ""); tfs = payload.get("tfs", "")
+    payload = payload or {}; mode = normalize_mode(payload.get("mode", "balanced")); symbols = payload.get("symbols", ""); tfs = payload.get("tfs", "")
     return start_locked("auto_discovery", f"discover:{mode}:{symbols}:{tfs}", run_auto_discovery, payload, mode=mode, symbols=symbols, tfs=tfs)
 @app.post("/api/jobs/scan")
 def job_scan(payload: Dict[str, Any]):
-    mode = payload.get("mode", "quick"); name = payload.get("name") or f"scan_{mode}_{time.strftime('%Y%m%d_%H%M%S')}"
+    mode = normalize_mode(payload.get("mode", "balanced")); name = payload.get("name") or f"scan_{mode}_{time.strftime('%Y%m%d_%H%M%S')}"
     return start_locked("scan", f"scan:{mode}", run_scan_only, payload, name=name, mode=mode, symbols=payload.get("symbols", ""), tfs=payload.get("tfs", ""))
 @app.post("/api/jobs/full-pipeline")
 def job_full_pipeline(payload: Dict[str, Any] | None = None):
-    payload = payload or {}; payload.setdefault("mode", "quick"); jid, reused = create_or_reuse_job("full_pipeline", "full_pipeline", payload, _empty_steps())
+    payload = payload or {}; payload["mode"] = normalize_mode(payload.get("mode", "balanced")); jid, reused = create_or_reuse_job("full_pipeline", "full_pipeline", payload, _empty_steps())
     if reused: return {"job_id": jid, "reused": True, "message": "Full pipeline already running."}
     threading.Thread(target=run_full_pipeline_job, args=(jid, payload), daemon=True).start()
-    return {"job_id": jid, "reused": False, "message": "Full pipeline started."}
+    return {"job_id": jid, "reused": False, "message": f"Full pipeline started in {payload['mode']} mode."}
 @app.post("/api/jobs/event-lab")
 def job_event_lab(payload: Dict[str, Any] | None = None):
     payload = payload or {}; scan_name = payload.get("scan_name") or None
