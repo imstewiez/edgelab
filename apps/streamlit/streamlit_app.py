@@ -158,7 +158,7 @@ with tabs[0]:
         st.info("No shortlist rows yet.")
     else:
         show_cols = [c for c in ["setup_id", "symbol", "tf", "concept", "session", "pf", "test_pf", "score", "robustness_score", "wf_score", "stress_status", "mc_score", "portfolio_score", "permutation_score", "sumR", "real_sumR", "maxDD_R", "standalone_monthly_dd_R", "p95_dd_R", "paper_sumR", "paper_maxDD_R", "example_profit_eur", "example_dd_eur", "verdict", "paper_notes", "promotion_rule"] if c in source.columns]
-        st.dataframe(source[show_cols].head(50), use_container_width=True, height=520)
+        st.dataframe(source[show_cols].head(50), width="stretch", height=520)
         if "example_profit_eur" in source.columns or "example_dd_eur" in source.columns:
             st.success(f"Example uses account {fmt_money(account_size)} and {risk_pct:.1f}% risk/trade. 1R = {fmt_money(account_size * risk_pct / 100)}.")
 
@@ -170,15 +170,15 @@ with tabs[1]:
         c1, c2 = st.columns(2)
         sym_counts = all_edges.groupby("symbol").size().reset_index(name="tests").sort_values("tests", ascending=False)
         cand_sym = candidates.groupby("symbol").size().reset_index(name="candidates").sort_values("candidates", ascending=False) if not candidates.empty else pd.DataFrame(columns=["symbol", "candidates"])
-        c1.plotly_chart(px.bar(sym_counts, x="symbol", y="tests", title="All tests by symbol"), use_container_width=True)
-        c2.plotly_chart(px.bar(cand_sym, x="symbol", y="candidates", title="Candidates by symbol"), use_container_width=True)
+        c1.plotly_chart(px.bar(sym_counts, x="symbol", y="tests", title="All tests by symbol"), width="stretch")
+        c2.plotly_chart(px.bar(cand_sym, x="symbol", y="candidates", title="Candidates by symbol"), width="stretch")
         c3, c4 = st.columns(2)
         if "concept" in all_edges.columns:
             concept_counts = all_edges.groupby("concept").size().reset_index(name="tests").sort_values("tests", ascending=False)
-            c3.plotly_chart(px.bar(concept_counts, x="concept", y="tests", title="Tests by concept"), use_container_width=True)
+            c3.plotly_chart(px.bar(concept_counts, x="concept", y="tests", title="Tests by concept"), width="stretch")
         if "tf" in all_edges.columns:
             tf_counts = all_edges.groupby("tf").size().reset_index(name="tests").sort_values("tests", ascending=False)
-            c4.plotly_chart(px.bar(tf_counts, x="tf", y="tests", title="Tests by timeframe"), use_container_width=True)
+            c4.plotly_chart(px.bar(tf_counts, x="tf", y="tests", title="Tests by timeframe"), width="stretch")
 
 with tabs[2]:
     st.write("### Liquidity / Price Action / Inefficiency profiler")
@@ -186,9 +186,9 @@ with tabs[2]:
         st.info("No inefficiency_lab.csv for this run yet. Use the sidebar button 'Run Inefficiency Lab'.")
     else:
         top = ineff.sort_values("inefficiency_score", ascending=False).head(60)
-        st.dataframe(top, use_container_width=True, height=520)
+        st.dataframe(top, width="stretch", height=520)
         fig = px.scatter(top, x="events", y="inefficiency_score", color="family", hover_data=["symbol", "tf", "pattern", "side", "interpretation"], title="Inefficiency score vs event sample")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 with tabs[3]:
     for name, df in [("Candidates", candidates), ("Validation", validation), ("Walk-forward", walkforward), ("Execution Stress", stress), ("Monte Carlo", mc), ("Portfolio", portfolio), ("Permutation", perm), ("Incubation", incubation)]:
@@ -196,7 +196,7 @@ with tabs[3]:
             if df.empty:
                 st.info(f"No {name} data yet.")
             else:
-                st.dataframe(df.head(300), use_container_width=True, height=420)
+                st.dataframe(df.head(300), width="stretch", height=420)
 
 with tabs[4]:
     st.markdown(
