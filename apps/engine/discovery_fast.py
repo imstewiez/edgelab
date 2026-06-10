@@ -10,28 +10,34 @@ import pandas as pd
 import quantlab_core as qc
 from pipeline_io import EDGE_COLUMNS, safe_to_csv
 
-QUICK_SYMBOL_ORDER = ["XAUUSD", "NAS100", "US30", "GBPJPY", "EURUSD", "GBPUSD", "USDJPY", "XTIUSD", "USDCAD", "EURJPY", "AUDUSD"]
-QUICK_TF_ORDER = ["M15", "M30", "H1", "H4", "D1", "M5"]
+SYMBOL_ORDER = ["XAUUSD", "NAS100", "US30", "GBPJPY", "EURUSD", "GBPUSD", "USDJPY", "XTIUSD", "USDCAD", "EURJPY", "AUDUSD"]
+TF_ORDER = ["M15", "M30", "H1", "H4", "D1", "M5", "M1"]
+
 QUICK_MAX_DATASETS = 12
 QUICK_MAX_RESULTS = 600
-EFFICIENT_MAX_DATASETS = 28
+BALANCED_MAX_DATASETS = 32
+BALANCED_MAX_RESULTS = 3000
 
 QUICK_MAX_BARS = {"M1": 12000, "M5": 20000, "M15": 35000, "M30": 45000, "H1": 70000}
-EFFICIENT_MAX_BARS = {"M1": 30000, "M5": 50000, "M15": 75000, "M30": 90000, "H1": 120000}
+BALANCED_MAX_BARS = {"M1": 22000, "M5": 42000, "M15": 70000, "M30": 90000, "H1": 140000}
+DEEP_MAX_BARS = {"M1": 60000, "M5": 90000, "M15": 120000, "M30": 160000, "H1": 220000}
 
 
 def _concepts(tf: str, mode: str) -> list[str]:
+    """Research concept universe.
+
+    quick = fast sanity check.
+    balanced = actual multi-concept discovery across market inefficiency families.
+    broad/deep/exhaustive = full concept catalogue.
+    """
     if mode == "quick":
         core = ["sweep_reclaim", "compression_breakout", "breakout_trend"]
         if tf in ["H1", "H4", "D1", "M30"]:
             core.append("prev_day_sweep")
         return core
-    if mode in {"broad", "exhaustive"}:
+    if mode in {"balanced", "deep", "broad", "exhaustive"}:
         return qc.concepts_for_tf(tf)
-    core = ["breakout_trend", "compression_breakout", "sweep_reclaim", "prev_day_sweep", "pullback_ema21"]
-    if tf in ["M5", "M15", "M30", "H1"]:
-        core.append("asian_breakout")
-    return core
+    return qc.concepts_for_tf(tf)
 
 
 def _profile(tf: str, mode: str):
@@ -40,11 +46,16 @@ def _profile(tf: str, mode: str):
         lbs = [20]
         rrs = [1.0, 1.4]
         slms = [1.0]
-    elif mode in {"broad", "exhaustive"}:
-        sessions = ["all", "london_ny", "ny", "overlap"]
+    elif mode == "balanced":
+        sessions = ["all", "london_ny"] if tf in ["H4", "D1"] else ["all", "london_ny", "ny"]
         lbs = [20, 50] if tf in ["H1", "H4", "D1"] else [12, 20, 48]
+        rrs = [1.0, 1.4, 2.0]
+        slms = [1.0, 1.4]
+    elif mode in {"deep", "broad", "exhaustive"}:
+        sessions = ["all", "london_ny", "ny", "overlap"]
+        lbs = [20, 50, 80] if tf in ["H1", "H4", "D1"] else [8, 12, 20, 48]
         rrs = [1.0, 1.4, 2.0, 2.5]
-        slms = [1.0, 1.4, 2.0]
+        slms = [0.8, 1.0, 1.4, 2.0]
     else:
         sessions = ["all", "london_ny"] if tf in ["H4", "D1"] else ["all", "london_ny", "ny"]
         lbs = [20] if tf in ["H1", "H4", "D1"] else [12, 20]
@@ -56,31 +67,26 @@ def _profile(tf: str, mode: str):
 def _rank_and_limit(cat: pd.DataFrame, mode: str, symbols: str, tfs: str) -> pd.DataFrame:
     if cat.empty:
         return cat
-    if mode == "quick":
+    if mode in {"quick", "balanced"}:
         if not symbols:
-            cat = cat[cat.symbol.isin(QUICK_SYMBOL_ORDER)]
+            cat = cat[cat.symbol.isin(SYMBOL_ORDER)]
         if not tfs:
-            cat = cat[cat.tf.isin(QUICK_TF_ORDER)]
+            cat = cat[cat.tf.isin(TF_ORDER)]
         if cat.empty:
             return cat
-        sym_rank = {s: i for i, s in enumerate(QUICK_SYMBOL_ORDER)}
-        tf_rank = {t: i for i, t in enumerate(QUICK_TF_ORDER)}
+        sym_rank = {s: i for i, s in enumerate(SYMBOL_ORDER)}
+        tf_rank = {t: i for i, t in enumerate(TF_ORDER)}
         cat = cat.copy()
         cat["_rank"] = cat.symbol.map(sym_rank).fillna(999).astype(int) * 100 + cat.tf.map(tf_rank).fillna(99).astype(int)
-        return cat.sort_values(["_rank", "symbol", "tf"]).drop(columns=["_rank"]).head(QUICK_MAX_DATASETS)
-    if mode in {"efficient", "fast", "priority"} and len(cat) > EFFICIENT_MAX_DATASETS:
-        sym_rank = {s: i for i, s in enumerate(QUICK_SYMBOL_ORDER)}
-        tf_rank = {t: i for i, t in enumerate(QUICK_TF_ORDER + ["M1"])}
-        cat = cat.copy()
-        cat["_rank"] = cat.symbol.map(sym_rank).fillna(999).astype(int) * 100 + cat.tf.map(tf_rank).fillna(99).astype(int)
-        return cat.sort_values(["_rank", "symbol", "tf"]).drop(columns=["_rank"]).head(EFFICIENT_MAX_DATASETS)
+        cap = QUICK_MAX_DATASETS if mode == "quick" else BALANCED_MAX_DATASETS
+        return cat.sort_values(["_rank", "symbol", "tf"]).drop(columns=["_rank"]).head(cap)
     return cat
 
 
 def _prepare_df(df: pd.DataFrame, tf: str, mode: str, logger: Callable[[str], None]) -> pd.DataFrame:
     if mode in {"exhaustive", "broad"}:
         return df.reset_index(drop=True)
-    limits = QUICK_MAX_BARS if mode == "quick" else EFFICIENT_MAX_BARS
+    limits = QUICK_MAX_BARS if mode == "quick" else (BALANCED_MAX_BARS if mode == "balanced" else DEEP_MAX_BARS)
     max_bars = limits.get(tf)
     if max_bars and len(df) > max_bars:
         logger(f"  using recent {max_bars:,} bars from {len(df):,} available for {mode} discovery")
@@ -102,17 +108,17 @@ def _empty_result(name: str, out, datasets: list[dict], logger: Callable[[str], 
     return {"scan_name": name, "datasets": len(datasets), "tested_edges": 0, "candidates": 0, "rejected": 0, "mode": "empty", "active_concepts_tested": [], "warning": reason}
 
 
-def discover_edges(name, mode="quick", symbols="", tfs="", logger: Callable[[str], None] = print):
+def discover_edges(name, mode="balanced", symbols="", tfs="", logger: Callable[[str], None] = print):
     if not qc.FEATURE_CATALOG_PATH.exists():
         raise RuntimeError("No feature catalog found. Run Build Features first.")
 
-    mode = "quick" if mode in {"auto", "priority", "efficient", "fast", ""} else str(mode or "quick")
+    mode = "balanced" if mode in {"auto", "priority", "efficient", "fast", ""} else str(mode or "balanced")
     cat = pd.read_csv(qc.FEATURE_CATALOG_PATH).replace([np.inf, -np.inf], np.nan).fillna("")
     if symbols:
         cat = cat[cat.symbol.isin({x.strip().upper() for x in symbols.split(",") if x.strip()})]
     if tfs:
         cat = cat[cat.tf.isin({x.strip().upper() for x in tfs.split(",") if x.strip()})]
-    if mode in {"priority", "efficient", "fast", "quick", "broad"}:
+    if mode in {"priority", "efficient", "fast", "quick", "balanced", "deep", "broad"}:
         cat = cat[cat.symbol.isin(qc.PRIORITY_SYMBOLS)]
     if mode == "htf":
         cat = cat[cat.tf.isin(["H1", "H4", "D1"])]
@@ -132,6 +138,7 @@ def discover_edges(name, mode="quick", symbols="", tfs="", logger: Callable[[str
         return _empty_result(name, out, datasets, logger, "No datasets matched selected mode/symbol/timeframe filters.")
 
     stop_scan = False
+    result_cap = QUICK_MAX_RESULTS if mode == "quick" else (BALANCED_MAX_RESULTS if mode == "balanced" else None)
     for ds_i, (_, r) in enumerate(cat.iterrows(), 1):
         sym, tf = str(r.symbol), str(r.tf)
         fp = qc.feature_path(sym, tf)
@@ -150,7 +157,7 @@ def discover_edges(name, mode="quick", symbols="", tfs="", logger: Callable[[str
         min_tr = 25 if tf == "D1" else 35
         total_grid = len(concepts) * len(lbs) * len(sessions) * len(rrs) * len(slms)
         tested_here = 0
-        logger(f"[{ds_i}/{len(cat)}] Scanning {sym} {tf}: rows={len(df):,}, grid≈{total_grid}")
+        logger(f"[{ds_i}/{len(cat)}] Scanning {sym} {tf}: rows={len(df):,}, concepts={len(concepts)}, grid≈{total_grid}")
 
         for concept in concepts:
             for lb in lbs:
@@ -192,9 +199,9 @@ def discover_edges(name, mode="quick", symbols="", tfs="", logger: Callable[[str
                             rec["score"] = round(score, 3)
                             rec["status"] = "rejected" if reasons else "candidate"
                             rec["grade"] = "A" if not reasons and score >= 105 else ("B" if not reasons and score >= 80 else ("C" if not reasons else "Rejected"))
-                            rec["verdict"] = "; ".join(reasons) if reasons else "Passed quick automated checks"
+                            rec["verdict"] = "; ".join(reasons) if reasons else f"Passed {mode} automated checks"
                             results.append(rec)
-                            if mode == "quick" and len(results) >= QUICK_MAX_RESULTS:
+                            if result_cap and len(results) >= result_cap:
                                 stop_scan = True
                                 break
                         if stop_scan: break
@@ -203,7 +210,7 @@ def discover_edges(name, mode="quick", symbols="", tfs="", logger: Callable[[str
             if stop_scan: break
         logger(f"[{ds_i}/{len(cat)}] Done {sym} {tf}: tested_grid={tested_here}, total_results={len(results)}, elapsed={time.time() - started:.1f}s")
         if stop_scan:
-            logger(f"Quick result cap reached ({QUICK_MAX_RESULTS}); stopping discovery early.")
+            logger(f"{mode.title()} result cap reached ({result_cap}); stopping discovery early.")
             break
 
     if not results:
