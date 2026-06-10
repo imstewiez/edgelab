@@ -1,6 +1,7 @@
 @echo off
+setlocal
 title CoreEA EdgeLab Web
-cd apps\web
+cd /d "%~dp0apps\web"
 if not exist node_modules (
   npm install
 )
