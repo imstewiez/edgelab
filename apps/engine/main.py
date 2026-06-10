@@ -12,7 +12,9 @@ from quantlab_core import (
 )
 from execution_stress import read_execution_stress, run_execution_stress
 from monte_carlo import read_monte_carlo, run_monte_carlo
+from portfolio_risk import read_portfolio_risk, run_portfolio_risk
 from robustness import read_validation, run_validation
+from sensitivity import read_sensitivity, run_sensitivity
 from strategy_universe import get_strategy_universe
 from walkforward import read_walkforward, run_walkforward
 
@@ -123,6 +125,14 @@ def job_execution_stress(payload: Dict[str, Any] | None = None):
 def job_monte_carlo(payload: Dict[str, Any] | None = None):
     payload = payload or {}; scan_name = payload.get('scan_name') or None
     return start_locked('stage5_monte_carlo', f'monte_carlo:{scan_name or "latest"}', run_monte_carlo, payload, scan_name=scan_name)
+@app.post('/api/jobs/sensitivity')
+def job_sensitivity(payload: Dict[str, Any] | None = None):
+    payload = payload or {}; scan_name = payload.get('scan_name') or None
+    return start_locked('stage6_sensitivity', f'sensitivity:{scan_name or "latest"}', run_sensitivity, payload, scan_name=scan_name)
+@app.post('/api/jobs/portfolio-risk')
+def job_portfolio_risk(payload: Dict[str, Any] | None = None):
+    payload = payload or {}; scan_name = payload.get('scan_name') or None
+    return start_locked('stage7_portfolio_risk', f'portfolio_risk:{scan_name or "latest"}', run_portfolio_risk, payload, scan_name=scan_name)
 
 @app.get('/api/jobs')
 def get_jobs():
@@ -147,6 +157,10 @@ def walkforward(scan_name: str | None = None): return read_walkforward(scan_name
 def execution_stress(scan_name: str | None = None): return read_execution_stress(scan_name)
 @app.get('/api/monte-carlo')
 def monte_carlo(scan_name: str | None = None): return read_monte_carlo(scan_name)
+@app.get('/api/sensitivity')
+def sensitivity(scan_name: str | None = None): return read_sensitivity(scan_name)
+@app.get('/api/portfolio-risk')
+def portfolio_risk(scan_name: str | None = None): return read_portfolio_risk(scan_name)
 @app.get('/api/outputs/{scan_name}/edges')
 def output_edges(scan_name: str, kind: str='candidate', limit: int=100): return read_edges_preview(scan_name, kind, limit)
 @app.get('/api/outputs/{scan_name}/report')
