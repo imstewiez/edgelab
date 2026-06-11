@@ -6,14 +6,19 @@
 //| - Anchored VWAP value model with dynamic standard deviation bands  |
 //| - Structural liquidity sweeps and reclaims                         |
 //| - Synthetic CVD / tick-flow divergence                             |
-//| - Displacement + Fair Value Gap / liquidity vacuum                 |
+//| - Displacement / liquidity vacuum confirmation                     |
 //| - Portfolio risk and asset-bucket exposure control                 |
+//|                                                                  |
+//| Version 1.100 changes:                                             |
+//| - Fixes AVWAP warmup blocking after London/NY anchor reset         |
+//| - Adds balanced scored confirmation defaults                       |
+//| - Keeps strict institutional blueprint available via inputs         |
 //|                                                                  |
 //| Live trading is blocked unless AllowLiveTrading=true.              |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.001"
-#property description "CoreEA institutional AVWAP liquidity sweep microstructure EA"
+#property version   "1.100"
+#property description "CoreEA AVWAP microstructure liquidity sweep EA - balanced automatic version"
 
 //====================================================================
 // INPUTS
@@ -32,9 +37,11 @@ input int              SessionTimeShiftHours         = 0;
 input int              LondonAnchorHour              = 7;
 input int              NewYorkAnchorHour             = 13;
 input int              VwapMaxBars                   = 500;
+input int              VwapMinBarsAfterAnchor        = 3;
 input double           VwapBand1SD                   = 1.0;
-input double           VwapBand2SD                   = 2.0;
-input bool             RequireAVWAPExtreme           = true;
+input double           VwapBand2SD                   = 1.50;
+input bool             RequireAVWAPExtreme           = false;   // Strict mode: long below lower2, short above upper2.
+input bool             UseAVWAPAsScore               = true;
 
 input group "03. Liquidity Pools"
 input int              AsiaStartHour                 = 0;
@@ -42,44 +49,50 @@ input int              AsiaEndHour                   = 7;
 input bool             UseAsianLiquidity             = true;
 input bool             UsePreviousDayLiquidity       = true;
 input bool             UseRollingIntradayLiquidity   = true;
-input int              RollingPoolLookbackBars       = 96;
-input double           MinSweepATR                   = 0.05;
+input int              RollingPoolLookbackBars       = 64;
+input double           MinSweepATR                   = 0.03;
 input double           MinReclaimCloseATR            = 0.00;
 
 input group "04. Synthetic Order Flow / CVD"
 input int              CvdLookbackBars               = 3;
-input double           CvdSpikeMultiplier            = 1.25;
-input bool             RequireSyntheticCvdConfirm    = true;
+input double           CvdSpikeMultiplier            = 1.05;
+input bool             RequireSyntheticCvdConfirm    = false;   // Strict mode hard-requires CVD. Balanced mode scores it.
 
 input group "05. Displacement / Liquidity Vacuum"
 input int              ATRPeriod                     = 14;
-input double           DisplacementBodyATR           = 1.50;
-input int              DisplacementBreakLookback     = 5;
-input bool             RequireFVG                    = true;
-input bool             PreferLimitAtVacuumMidpoint   = true;
-input int              PendingExpiryBars             = 8;
+input double           DisplacementBodyATR           = 0.75;
+input int              DisplacementBreakLookback     = 4;
+input bool             RequireFVG                    = false;   // Strict mode hard-requires real FVG.
+input bool             RequireStructureShift         = true;    // Displacement OR FVG.
+input bool             PreferLimitAtVacuumMidpoint   = false;
+input int              PendingExpiryBars             = 6;
 
-input group "06. Execution / Risk"
-input double           RiskPercentPerTrade           = 0.25;
-input double           SL_ATR_Padding                = 0.50;
-input double           MinimumRR                     = 2.00;
-input double           FallbackRR                    = 2.20;
-input int              MaxBarsInTrade                = 48;
+input group "06. Scored Confirmation"
+input bool             UseScoredConfirmation         = true;
+input int              MinSignalScore                = 3;
+input bool             StrictInstitutionalMode       = false;   // If true: AVWAP extreme + CVD + displacement/FVG are hard gates.
+
+input group "07. Execution / Risk"
+input double           RiskPercentPerTrade           = 0.20;
+input double           SL_ATR_Padding                = 0.35;
+input double           MinimumRR                     = 1.60;
+input double           FallbackRR                    = 1.80;
+input int              MaxBarsInTrade                = 36;
 input bool             MoveToBreakeven               = true;
-input double           BreakevenAtR                  = 1.00;
+input double           BreakevenAtR                  = 0.90;
 input double           BreakevenPlusPoints           = 2.0;
 input bool             UseATRTrailing                = true;
-input double           TrailStartR                   = 1.50;
-input double           TrailATRMult                  = 1.20;
+input double           TrailStartR                   = 1.30;
+input double           TrailATRMult                  = 1.10;
 
-input group "07. Portfolio Risk Buckets"
+input group "08. Portfolio Risk Buckets"
 input int              MaxPortfolioPositions         = 4;
 input int              MaxPositionsPerSymbol         = 1;
-input int              MaxPositionsPerBucket         = 1;
+input int              MaxPositionsPerBucket         = 2;
 input int              MaxTradesPerSymbolPerDay      = 2;
 input double           MaxDailyLossPercent           = 2.0;
 
-input group "08. Session / Spread / Broker Adaptation"
+input group "09. Session / Spread / Broker Adaptation"
 input int              TradeStartHour                = 7;
 input int              TradeEndHour                  = 20;
 input bool             AvoidFridayLate               = true;
@@ -140,6 +153,7 @@ struct STradeSignal
    double   sweepExtreme;
    double   fvgMidpoint;
    bool     useLimit;
+   int      score;
    string   reason;
 };
 
@@ -275,7 +289,7 @@ public:
       h = FileOpen(m_file, FILE_WRITE | FILE_CSV | FILE_ANSI);
       if(h == INVALID_HANDLE)
          return;
-      FileWrite(h, "time", "event", "symbol", "bucket", "setup", "side", "price", "sl", "tp", "rr", "atr", "spread", "retcode", "note");
+      FileWrite(h, "time", "event", "symbol", "bucket", "setup", "side", "price", "sl", "tp", "rr", "atr", "spread", "score", "retcode", "note");
       FileClose(h);
    }
 
@@ -290,6 +304,7 @@ public:
               const double rr,
               const double atr,
               const int spread,
+              const int score,
               const uint retcode,
               const string note)
    {
@@ -306,11 +321,11 @@ public:
                    DoubleToString(tp, digits),
                    DoubleToString(rr, 2),
                    DoubleToString(atr, digits),
-                   spread, retcode, note);
+                   spread, score, retcode, note);
          FileClose(h);
       }
-      if(DebugLogs || eventType == "ORDER_ERROR" || eventType == "SLTP_ERROR" || eventType == "SKIP")
-         Print(eventType, " ", symbol, " ", setup, " ", side, " ", note);
+      if(DebugLogs || eventType == "ORDER_ERROR" || eventType == "SLTP_ERROR" || eventType == "SKIP" || eventType == "SIGNAL")
+         Print(eventType, " ", symbol, " ", setup, " ", side, " score=", score, " ", note);
    }
 };
 
@@ -328,62 +343,62 @@ public:
       string s = UpperString(symbol);
       p.bucket = "FX_USD";
       p.riskMultiplier = 1.0;
-      p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 25;
-      p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 20;
-      p.minStopATR = 0.65;
-      p.maxStopATR = 4.00;
+      p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 45;
+      p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 25;
+      p.minStopATR = 0.55;
+      p.maxStopATR = 4.50;
 
       if(StringFind(s, "XAU") >= 0 || StringFind(s, "GOLD") >= 0)
       {
          p.bucket = "METALS";
          p.riskMultiplier = 0.70;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 120;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 50;
-         p.minStopATR = 0.85;
-         p.maxStopATR = 5.00;
+         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 150;
+         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 60;
+         p.minStopATR = 0.70;
+         p.maxStopATR = 6.00;
       }
       else if(StringFind(s, "BTC") >= 0 || StringFind(s, "ETH") >= 0 || StringFind(s, "CRYPTO") >= 0)
       {
          p.bucket = "CRYPTO";
          p.riskMultiplier = 0.50;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 500;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 100;
-         p.minStopATR = 1.00;
-         p.maxStopATR = 6.00;
+         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 650;
+         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 120;
+         p.minStopATR = 0.90;
+         p.maxStopATR = 7.00;
       }
       else if(StringFind(s, "NAS") >= 0 || StringFind(s, "US30") >= 0 || StringFind(s, "SPX") >= 0 || StringFind(s, "GER") >= 0 || StringFind(s, "DAX") >= 0)
       {
          p.bucket = "INDICES";
          p.riskMultiplier = 0.60;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 250;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 80;
-         p.minStopATR = 0.90;
-         p.maxStopATR = 5.50;
+         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 300;
+         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 90;
+         p.minStopATR = 0.80;
+         p.maxStopATR = 6.00;
       }
       else if(StringFind(s, "JPY") >= 0)
       {
          p.bucket = "FX_JPY";
          p.riskMultiplier = 0.90;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 40;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 25;
-         p.minStopATR = 0.75;
-         p.maxStopATR = 4.50;
+         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 55;
+         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 30;
+         p.minStopATR = 0.60;
+         p.maxStopATR = 5.00;
       }
       else if(StringFind(s, "GBP") >= 0)
       {
          p.bucket = "FX_GBP";
          p.riskMultiplier = 0.85;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 35;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 25;
-         p.minStopATR = 0.70;
-         p.maxStopATR = 4.50;
+         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 50;
+         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 30;
+         p.minStopATR = 0.60;
+         p.maxStopATR = 5.00;
       }
       else if(StringFind(s, "AUD") >= 0 || StringFind(s, "NZD") >= 0)
       {
          p.bucket = "FX_AUD_NZD";
          p.riskMultiplier = 1.0;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 32;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 25;
+         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 45;
+         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 30;
       }
       return p;
    }
@@ -424,7 +439,7 @@ public:
       MqlRates rates[];
       ArraySetAsSeries(rates, true);
       int copied = CopyRates(symbol, SignalTF, 0, VwapMaxBars, rates);
-      if(copied < 50)
+      if(copied < 20)
          return false;
 
       datetime anchor = ActiveAnchorServerTime(symbol);
@@ -442,21 +457,44 @@ public:
          sumV += vol;
          used++;
       }
-      if(used < 10 || sumV <= 0.0)
+
+      if(used < VwapMinBarsAfterAnchor)
+      {
+         sumPV = 0.0;
+         sumV = 0.0;
+         used = 0;
+         int fallbackBars = MathMin(48, copied - 1);
+         for(int k = 1; k <= fallbackBars; k++)
+         {
+            double typical = (rates[k].high + rates[k].low + rates[k].close) / 3.0;
+            double vol = (double)MathMax((long)1, rates[k].tick_volume);
+            sumPV += typical * vol;
+            sumV += vol;
+            used++;
+         }
+      }
+
+      if(used < VwapMinBarsAfterAnchor || sumV <= 0.0)
          return false;
 
       double vwap = sumPV / sumV;
       double variance = 0.0;
+      int counted = 0;
       for(int j = 1; j < copied; j++)
       {
-         if(rates[j].time < anchor)
+         if(rates[j].time < anchor && counted >= VwapMinBarsAfterAnchor)
+            break;
+         if(counted >= used)
             break;
          double typical = (rates[j].high + rates[j].low + rates[j].close) / 3.0;
          double vol = (double)MathMax((long)1, rates[j].tick_volume);
          variance += vol * MathPow(typical - vwap, 2.0);
+         counted++;
       }
       variance /= sumV;
       double sd = MathSqrt(MathMax(0.0, variance));
+      if(sd <= 0.0)
+         sd = SymbolPoint(symbol) * 10.0;
 
       state.valid = true;
       state.anchorTime = anchor;
@@ -600,7 +638,7 @@ private:
       double cvdNow = d1 + d2 + d3;
       double cvdPast = d2 + d3 + d4;
       bool divergence = rates[1].low < rates[3].low && cvdNow > cvdPast;
-      bool spike = d1 > MathMax(avgAbs * CvdSpikeMultiplier, MathAbs(d2 + d3) * 0.50);
+      bool spike = d1 > MathMax(avgAbs * CvdSpikeMultiplier, MathAbs(d2 + d3) * 0.35);
       return divergence || spike;
    }
 
@@ -616,43 +654,32 @@ private:
       double cvdNow = d1 + d2 + d3;
       double cvdPast = d2 + d3 + d4;
       bool divergence = rates[1].high > rates[3].high && cvdNow < cvdPast;
-      bool spike = d1 < -MathMax(avgAbs * CvdSpikeMultiplier, MathAbs(d2 + d3) * 0.50);
+      bool spike = d1 < -MathMax(avgAbs * CvdSpikeMultiplier, MathAbs(d2 + d3) * 0.35);
       return divergence || spike;
    }
 
-   bool DisplacementAndFVG(const MqlRates &rates[], const int copied, const int side, const double atr, double &midpoint)
+   bool DisplacementAndFVG(const MqlRates &rates[], const int copied, const int side, const double atr, double &midpoint, bool &hasDisp, bool &hasFvg)
    {
+      hasDisp = false;
+      hasFvg = false;
+      midpoint = 0.0;
       if(copied < 8 || atr <= 0)
          return false;
-      double body = MathAbs(rates[1].close - rates[1].open);
-      if(body < atr * DisplacementBodyATR)
-         return false;
 
+      double body = MathAbs(rates[1].close - rates[1].open);
       if(side == 1)
       {
-         if(rates[1].close <= rates[1].open)
-            return false;
-         if(rates[1].close <= HighestFromRates(rates, 2, DisplacementBreakLookback))
-            return false;
-         bool fvg = rates[1].low > rates[3].high;
-         if(RequireFVG && !fvg)
-            return false;
-         midpoint = fvg ? (rates[1].low + rates[3].high) / 2.0 : (rates[1].open + rates[1].close) / 2.0;
-         return true;
+         hasDisp = (rates[1].close > rates[1].open && body >= atr * DisplacementBodyATR && rates[1].close > HighestFromRates(rates, 2, DisplacementBreakLookback));
+         hasFvg = rates[1].low > rates[3].high;
+         midpoint = hasFvg ? (rates[1].low + rates[3].high) / 2.0 : (rates[1].open + rates[1].close) / 2.0;
       }
-      if(side == -1)
+      else if(side == -1)
       {
-         if(rates[1].close >= rates[1].open)
-            return false;
-         if(rates[1].close >= LowestFromRates(rates, 2, DisplacementBreakLookback))
-            return false;
-         bool fvg = rates[1].high < rates[3].low;
-         if(RequireFVG && !fvg)
-            return false;
-         midpoint = fvg ? (rates[1].high + rates[3].low) / 2.0 : (rates[1].open + rates[1].close) / 2.0;
-         return true;
+         hasDisp = (rates[1].close < rates[1].open && body >= atr * DisplacementBodyATR && rates[1].close < LowestFromRates(rates, 2, DisplacementBreakLookback));
+         hasFvg = rates[1].high < rates[3].low;
+         midpoint = hasFvg ? (rates[1].high + rates[3].low) / 2.0 : (rates[1].open + rates[1].close) / 2.0;
       }
-      return false;
+      return hasDisp || hasFvg;
    }
 
    double OpposingTarget(const int side, const double entry, const SLiquidityPools &pools)
@@ -681,6 +708,23 @@ private:
       return target;
    }
 
+   int VwapScore(const int side, const double close, const SVwapState &vwap)
+   {
+      if(!vwap.valid)
+         return 0;
+      if(side == 1)
+      {
+         if(close < vwap.lower2) return 2;
+         if(close < vwap.lower1) return 1;
+      }
+      if(side == -1)
+      {
+         if(close > vwap.upper2) return 2;
+         if(close > vwap.upper1) return 1;
+      }
+      return 0;
+   }
+
 public:
    bool BuildSignal(const string symbol, const SAssetProfile &profile, const SVwapState &vwap, STradeSignal &sig)
    {
@@ -688,6 +732,7 @@ public:
       sig.symbol = symbol;
       sig.bucket = profile.bucket;
       sig.side = 0;
+      sig.score = 0;
       sig.reason = "";
 
       MqlRates rates[];
@@ -748,7 +793,12 @@ public:
          return false;
       }
 
-      if(RequireAVWAPExtreme && vwap.valid)
+      int score = 1; // mandatory sweep/reclaim happened.
+      int vwScore = VwapScore(side, bar.close, vwap);
+      if(UseAVWAPAsScore)
+         score += vwScore;
+
+      if((StrictInstitutionalMode || RequireAVWAPExtreme) && vwap.valid)
       {
          if(side == 1 && !(bar.close < vwap.lower2))
          { sig.reason = "long_not_below_avwap_minus2sd"; return false; }
@@ -756,16 +806,34 @@ public:
          { sig.reason = "short_not_above_avwap_plus2sd"; return false; }
       }
 
-      if(RequireSyntheticCvdConfirm)
-      {
-         bool ok = side == 1 ? CvdLongConfirm(rates, copied) : CvdShortConfirm(rates, copied);
-         if(!ok)
-         { sig.reason = "synthetic_cvd_no_absorption_divergence"; return false; }
-      }
+      bool cvdOk = side == 1 ? CvdLongConfirm(rates, copied) : CvdShortConfirm(rates, copied);
+      if(cvdOk)
+         score += 2;
+      if((StrictInstitutionalMode || RequireSyntheticCvdConfirm) && !cvdOk)
+      { sig.reason = "synthetic_cvd_no_absorption_divergence"; return false; }
 
       double fvgMid = 0.0;
-      if(!DisplacementAndFVG(rates, copied, side, atr, fvgMid))
-      { sig.reason = "no_displacement_or_fvg"; return false; }
+      bool hasDisp = false;
+      bool hasFvg = false;
+      bool structureOk = DisplacementAndFVG(rates, copied, side, atr, fvgMid, hasDisp, hasFvg);
+      if(hasDisp) score += 2;
+      if(hasFvg) score += 2;
+
+      if(StrictInstitutionalMode && (!hasDisp || !hasFvg))
+      { sig.reason = "strict_no_displacement_or_fvg"; return false; }
+      if(RequireFVG && !hasFvg)
+      { sig.reason = "no_fvg"; return false; }
+      if(RequireStructureShift && !structureOk)
+      { sig.reason = "no_structure_shift"; return false; }
+
+      if(depthATR >= 0.20)
+         score += 1;
+
+      if(UseScoredConfirmation && score < MinSignalScore)
+      {
+         sig.reason = StringFormat("score_too_low_%d", score);
+         return false;
+      }
 
       double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
       double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
@@ -817,7 +885,8 @@ public:
       sig.sweepExtreme = extreme;
       sig.fvgMidpoint = fvgMid;
       sig.useLimit = useLimit;
-      sig.reason = StringFormat("vwap=%.5f sd=%.5f sweepATR=%.2f fvgMid=%.5f", vwap.vwap, vwap.sd, depthATR, fvgMid);
+      sig.score = score;
+      sig.reason = StringFormat("score=%d vw=%d cvd=%d disp=%d fvg=%d sweepATR=%.2f vwap=%.5f sd=%.5f", score, vwScore, cvdOk, hasDisp, hasFvg, depthATR, vwap.vwap, vwap.sd);
       return true;
    }
 };
@@ -1049,12 +1118,7 @@ private:
       if(!ok || !RetcodeOK(res.retcode))
       {
          LOG.Write("SLTP_ERROR", symbol, "", label, "", 0, req.sl, req.tp, 0, 0,
-                   (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD), res.retcode, res.comment);
-      }
-      else if(DebugLogs)
-      {
-         LOG.Write("SLTP_OK", symbol, "", label, "", 0, req.sl, req.tp, 0, 0,
-                   (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD), res.retcode, "modified");
+                   (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD), 0, res.retcode, res.comment);
       }
    }
 
@@ -1082,23 +1146,25 @@ public:
       int spread = (int)SymbolInfoInteger(sig.symbol, SYMBOL_SPREAD);
       string sideName = sig.side == 1 ? "long" : "short";
 
+      LOG.Write("SIGNAL", sig.symbol, sig.bucket, sig.setup, sideName, sig.entryHint, sig.stopLoss, sig.takeProfit, sig.rr, sig.atr, spread, sig.score, 0, sig.reason);
+
       if(!CanExecuteNow())
       {
-         LOG.Write("BLOCKED", sig.symbol, sig.bucket, sig.setup, sideName, sig.entryHint, sig.stopLoss, sig.takeProfit, sig.rr, sig.atr, spread, 0, "trading_disabled " + sig.reason);
+         LOG.Write("BLOCKED", sig.symbol, sig.bucket, sig.setup, sideName, sig.entryHint, sig.stopLoss, sig.takeProfit, sig.rr, sig.atr, spread, sig.score, 0, "trading_disabled");
          return false;
       }
 
       string stopReason;
       if(!ValidateStops(sig, stopReason))
       {
-         LOG.Write("SKIP", sig.symbol, sig.bucket, sig.setup, sideName, sig.entryHint, sig.stopLoss, sig.takeProfit, sig.rr, sig.atr, spread, 0, stopReason);
+         LOG.Write("SKIP", sig.symbol, sig.bucket, sig.setup, sideName, sig.entryHint, sig.stopLoss, sig.takeProfit, sig.rr, sig.atr, spread, sig.score, 0, stopReason);
          return false;
       }
 
       double lots = risk.CalculateLots(sig.symbol, MathAbs(sig.entryHint - sig.stopLoss), profile.riskMultiplier);
       if(lots <= 0.0)
       {
-         LOG.Write("SKIP", sig.symbol, sig.bucket, sig.setup, sideName, sig.entryHint, sig.stopLoss, sig.takeProfit, sig.rr, sig.atr, spread, 0, "invalid_lot_size");
+         LOG.Write("SKIP", sig.symbol, sig.bucket, sig.setup, sideName, sig.entryHint, sig.stopLoss, sig.takeProfit, sig.rr, sig.atr, spread, sig.score, 0, "invalid_lot_size");
          return false;
       }
 
@@ -1134,12 +1200,12 @@ public:
       bool ok = OrderSend(req, res);
       if(!ok || !RetcodeOK(res.retcode))
       {
-         LOG.Write("ORDER_ERROR", sig.symbol, sig.bucket, sig.setup, sideName, req.price, req.sl, req.tp, sig.rr, sig.atr, spread, res.retcode, res.comment);
+         LOG.Write("ORDER_ERROR", sig.symbol, sig.bucket, sig.setup, sideName, req.price, req.sl, req.tp, sig.rr, sig.atr, spread, sig.score, res.retcode, res.comment);
          return false;
       }
 
       risk.RegisterTrade(sig.symbol);
-      LOG.Write(sig.useLimit ? "LIMIT_PLACED" : "MARKET_FILLED", sig.symbol, sig.bucket, sig.setup, sideName, req.price, req.sl, req.tp, sig.rr, sig.atr, spread, res.retcode, sig.reason);
+      LOG.Write(sig.useLimit ? "LIMIT_PLACED" : "MARKET_FILLED", sig.symbol, sig.bucket, sig.setup, sideName, req.price, req.sl, req.tp, sig.rr, sig.atr, spread, sig.score, res.retcode, sig.reason);
       return true;
    }
 
@@ -1195,7 +1261,7 @@ public:
       req.comment = reason;
 
       bool ok = OrderSend(req, res);
-      LOG.Write(ok && RetcodeOK(res.retcode) ? "CLOSE_SENT" : "CLOSE_ERROR", symbol, "", reason, "", req.price, 0, 0, 0, 0, (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD), res.retcode, res.comment);
+      LOG.Write(ok && RetcodeOK(res.retcode) ? "CLOSE_SENT" : "CLOSE_ERROR", symbol, "", reason, "", req.price, 0, 0, 0, 0, (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD), 0, res.retcode, res.comment);
       return ok && RetcodeOK(res.retcode);
    }
 
@@ -1351,14 +1417,14 @@ int OnInit()
 
    LOG.Init(CsvLogFile);
    RISK.Init(Symbols);
-   LOG.Write("INIT", "PORTFOLIO", "", "CoreEA_MicrostructureAVWAPPro", "", 0, 0, 0, 0, 0, 0, 0,
-             StringFormat("version=1.001 symbols=%d tf=%s live=%d tester=%d", n, EnumToString(SignalTF), AllowLiveTrading, ExecuteInTester));
+   LOG.Write("INIT", "PORTFOLIO", "", "CoreEA_MicrostructureAVWAPPro", "", 0, 0, 0, 0, 0, 0, 0, 0,
+             StringFormat("version=1.100 symbols=%d tf=%s strict=%d live=%d tester=%d", n, EnumToString(SignalTF), StrictInstitutionalMode, AllowLiveTrading, ExecuteInTester));
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason)
 {
-   LOG.Write("DEINIT", "PORTFOLIO", "", "CoreEA_MicrostructureAVWAPPro", "", 0, 0, 0, 0, 0, 0, 0, IntegerToString(reason));
+   LOG.Write("DEINIT", "PORTFOLIO", "", "CoreEA_MicrostructureAVWAPPro", "", 0, 0, 0, 0, 0, 0, 0, 0, IntegerToString(reason));
 }
 
 void OnTick()
@@ -1389,34 +1455,34 @@ void ProcessSymbol(const string symbol)
    int spread = (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
    if(spread <= 0 || spread > profile.maxSpreadPoints)
    {
-      LOG.Write("SKIP", symbol, profile.bucket, "spread_filter", "", 0, 0, 0, 0, 0, spread, 0, "spread_rejected");
+      LOG.Write("SKIP", symbol, profile.bucket, "spread_filter", "", 0, 0, 0, 0, 0, spread, 0, 0, "spread_rejected");
       return;
    }
 
    string riskReason;
    if(!RISK.CanOpen(symbol, profile.bucket, PROFILE, riskReason))
    {
-      LOG.Write("SKIP", symbol, profile.bucket, "portfolio_risk", "", 0, 0, 0, 0, 0, spread, 0, riskReason);
+      LOG.Write("SKIP", symbol, profile.bucket, "portfolio_risk", "", 0, 0, 0, 0, 0, spread, 0, 0, riskReason);
       return;
    }
 
    SVwapState vwap;
    if(!VWAP.Calculate(symbol, vwap))
    {
-      LOG.Write("SKIP", symbol, profile.bucket, "avwap", "", 0, 0, 0, 0, 0, spread, 0, "vwap_invalid");
+      LOG.Write("SKIP", symbol, profile.bucket, "avwap", "", 0, 0, 0, 0, 0, spread, 0, 0, "vwap_invalid");
       return;
    }
 
    STradeSignal sig;
    if(!LIQUIDITY.BuildSignal(symbol, profile, vwap, sig))
    {
-      LOG.Write("SKIP", symbol, profile.bucket, "liquidity_engine", "", 0, 0, 0, 0, 0, spread, 0, sig.reason);
+      LOG.Write("SKIP", symbol, profile.bucket, "liquidity_engine", "", 0, 0, 0, 0, 0, spread, sig.score, 0, sig.reason);
       return;
    }
 
    if(sig.rr < MinimumRR)
    {
-      LOG.Write("SKIP", symbol, profile.bucket, sig.setup, sig.side == 1 ? "long" : "short", sig.entryHint, sig.stopLoss, sig.takeProfit, sig.rr, sig.atr, spread, 0, "rr_below_minimum");
+      LOG.Write("SKIP", symbol, profile.bucket, sig.setup, sig.side == 1 ? "long" : "short", sig.entryHint, sig.stopLoss, sig.takeProfit, sig.rr, sig.atr, spread, sig.score, 0, "rr_below_minimum");
       return;
    }
 
