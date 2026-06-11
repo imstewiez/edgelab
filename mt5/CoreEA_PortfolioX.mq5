@@ -1,38 +1,26 @@
 //+------------------------------------------------------------------+
 //| CoreEA PortfolioX                                                 |
-//| MT5 Expert Advisor                                                |
-//|                                                                  |
-//| Production-oriented multi-system portfolio EA.                    |
-//|                                                                  |
-//| Built from the session lessons:                                   |
-//| - A single universal liquidity model is fragile.                  |
-//| - Pure SMC/liquidity labels over-filter or overtrade.             |
-//| - The realistic structure is a portfolio of independent systems.  |
-//| - Diversification is conditional; sizing/risk governors matter.    |
-//| - Target development metric should be Calmar-like: return/DD.     |
-//|                                                                  |
-//| Systems included:                                                 |
-//|  0 Trend pullback                                                  |
-//|  1 Momentum breakout                                               |
-//|  2 Late-cycle fast-move trail                                      |
-//|  3 Downside/risk-off participation                                 |
-//|  4 Correction rebound / reduced exposure                           |
-//|  5 Multi-timeframe trend core                                      |
-//|  6 AVWAP liquidity reversion                                      |
-//|  7 Volatility expansion                                            |
-//|  8 Defensive cash/no-trade regime                                  |
-//|                                                                  |
-//| Live trading is blocked unless AllowLiveTrading=true.              |
+//| Hardened multi-system systematic portfolio EA for MT5             |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.000"
-#property description "CoreEA PortfolioX - multi-system systematic portfolio EA"
+#property version   "1.100"
+#property description "CoreEA PortfolioX - hardened multi-system portfolio EA"
 
 #define MODULE_COUNT 9
 
-//====================================================================
-// INPUTS
-//====================================================================
+enum EModuleId
+{
+   MOD_TREND_PULLBACK=0,
+   MOD_MOMENTUM_BREAKOUT=1,
+   MOD_LATE_CYCLE_FAST_MOVE=2,
+   MOD_DOWNSIDE_RISK_OFF=3,
+   MOD_CORRECTION_REBOUND=4,
+   MOD_MTF_TREND_CORE=5,
+   MOD_AVWAP_LIQUIDITY=6,
+   MOD_VOLATILITY_EXPANSION=7,
+   MOD_DEFENSIVE_REGIME=8
+};
+
 input group "01. General"
 input bool             AllowLiveTrading          = false;
 input bool             ExecuteInTester           = true;
@@ -44,30 +32,31 @@ input int              MagicBase                 = 996000;
 input bool             DebugLogs                 = true;
 input string           CsvLogFile                = "CoreEA_PortfolioX.csv";
 
-input group "02. Portfolio Risk"
-input double           BaseRiskPercent           = 0.18;
-input int              MaxPortfolioPositions     = 5;
+input group "02. Portfolio Risk - Hardened Defaults"
+input double           BaseRiskPercent           = 0.08;
+input int              MaxPortfolioPositions     = 3;
 input int              MaxPositionsPerSymbol     = 1;
-input int              MaxPositionsPerBucket     = 2;
-input int              MaxPositionsPerSystem     = 2;
-input int              MaxTradesPerSymbolPerDay  = 3;
-input int              MaxTradesPerSystemPerDay  = 4;
-input double           MaxDailyLossPercent       = 2.0;
-input double           EquityKillDDPercent       = 8.0;
-input double           RiskCutDD1Percent         = 3.0;
+input int              MaxPositionsPerBucket     = 1;
+input int              MaxPositionsPerSystem     = 1;
+input int              MaxTradesPerSymbolPerDay  = 1;
+input int              MaxTradesPerSystemPerDay  = 2;
+input double           MaxDailyLossPercent       = 1.20;
+input double           EquityStopDDPercent       = 5.00;
+input double           RiskCutDD1Percent         = 2.00;
 input double           RiskCutDD1Multiplier      = 0.50;
-input double           RiskCutDD2Percent         = 5.0;
+input double           RiskCutDD2Percent         = 3.50;
 input double           RiskCutDD2Multiplier      = 0.25;
 
-input group "03. Session / Broker Adaptation"
+input group "03. Session / Execution Safety"
 input int              SessionTimeShiftHours     = 0;
 input int              TradeStartHour            = 7;
-input int              TradeEndHour              = 20;
+input int              TradeEndHour              = 19;
 input bool             AvoidFridayLate           = true;
-input int              FridayCutoffHour          = 16;
-input int              ManualMaxSpreadPoints     = 0;      // 0 = auto profile
-input int              ManualDeviationPoints     = 0;      // 0 = auto profile
+input int              FridayCutoffHour          = 15;
+input int              ManualMaxSpreadPoints     = 0;
+input int              ManualDeviationPoints     = 0;
 input bool             OneSignalPerSymbolPerBar  = true;
+input int              MinSLModifyStepPoints     = 10;
 
 input group "04. Indicators / Regime"
 input int              ATRPeriod                 = 14;
@@ -75,1562 +64,257 @@ input int              FastEMA                   = 50;
 input int              SlowEMA                   = 200;
 input int              PullbackEMA               = 21;
 input int              ADXPeriod                 = 14;
-input double           TrendADXMin               = 19.0;
-input double           StrongTrendADX            = 28.0;
-input double           RangeADXMax               = 17.0;
+input double           TrendADXMin               = 22.0;
+input double           StrongTrendADX            = 30.0;
+input double           RangeADXMax               = 16.0;
 
-input group "05. Module Enables"
+input group "05. Module Enables - Conservative"
 input bool             EnableTrendPullback       = true;
 input bool             EnableMomentumBreakout    = true;
-input bool             EnableLateCycleFastMove   = true;
+input bool             EnableLateCycleFastMove   = false;
 input bool             EnableDownsideRiskOff     = true;
-input bool             EnableCorrectionRebound   = true;
-input bool             EnableMTFTrendCore        = true;
-input bool             EnableAVWAPLiquidity      = true;
+input bool             EnableCorrectionRebound   = false;
+input bool             EnableMTFTrendCore        = false;
+input bool             EnableAVWAPLiquidity      = false;
 input bool             EnableVolatilityExpansion = true;
 input bool             EnableDefensiveRegime     = true;
 
 input group "06. Module Risk Multipliers"
-input double           RiskTrendPullback         = 1.00;
-input double           RiskMomentumBreakout      = 0.80;
-input double           RiskLateCycleFastMove     = 0.60;
-input double           RiskDownsideRiskOff       = 0.80;
-input double           RiskCorrectionRebound     = 0.20;
-input double           RiskMTFTrendCore          = 0.90;
-input double           RiskAVWAPLiquidity        = 0.70;
-input double           RiskVolatilityExpansion   = 0.75;
+input double           RiskTrendPullback         = 0.85;
+input double           RiskMomentumBreakout      = 0.70;
+input double           RiskLateCycleFastMove     = 0.45;
+input double           RiskDownsideRiskOff       = 0.60;
+input double           RiskCorrectionRebound     = 0.15;
+input double           RiskMTFTrendCore          = 0.55;
+input double           RiskAVWAPLiquidity        = 0.45;
+input double           RiskVolatilityExpansion   = 0.55;
 
 input group "07. Module Parameters"
-input int              BreakoutLookback          = 40;
-input int              SwingLookback             = 8;
-input int              RangeLookback             = 96;
+input int              BreakoutLookback          = 48;
+input int              SwingLookback             = 10;
 input int              AVWAPMaxBars              = 500;
 input int              AVWAPLondonAnchorHour     = 7;
 input int              AVWAPNewYorkAnchorHour    = 13;
-input double           AVWAPBandSD               = 1.35;
-input int              AsiaStartHour             = 0;
-input int              AsiaEndHour               = 7;
+input double           AVWAPBandSD               = 1.50;
 input int              RollingLiquidityLookback  = 64;
-input double           MinBodyATR                = 0.35;
-input double           MomentumBodyATR           = 0.55;
-input double           VolExpansionRatio         = 1.25;
-input double           RangeDeviationATR         = 1.20;
+input double           MinBodyATR                = 0.50;
+input double           MomentumBodyATR           = 0.75;
+input double           VolExpansionRatio         = 1.35;
+input double           RangeDeviationATR         = 1.35;
 
 input group "08. Exits / Trade Management"
-input double           DefaultRR                 = 1.65;
-input double           MinimumRR                 = 1.25;
-input double           StopATRMult               = 1.35;
+input double           DefaultRR                 = 1.70;
+input double           MinimumRR                 = 1.35;
+input double           StopATRMult               = 1.50;
 input bool             MoveToBreakeven           = true;
-input double           BreakevenAtR              = 0.90;
+input double           BreakevenAtR              = 1.00;
 input double           BreakevenPlusPoints       = 2.0;
 input bool             UseATRTrailing            = true;
-input double           TrailStartR               = 1.35;
-input double           TrailATRMult              = 1.15;
+input double           TrailStartR               = 1.50;
+input double           TrailATRMult              = 1.30;
 
-//====================================================================
-// ENUMS / STRUCTS
-//====================================================================
-enum EModuleId
-{
-   MOD_TREND_PULLBACK = 0,
-   MOD_MOMENTUM_BREAKOUT = 1,
-   MOD_LATE_CYCLE_FAST_MOVE = 2,
-   MOD_DOWNSIDE_RISK_OFF = 3,
-   MOD_CORRECTION_REBOUND = 4,
-   MOD_MTF_TREND_CORE = 5,
-   MOD_AVWAP_LIQUIDITY = 6,
-   MOD_VOLATILITY_EXPANSION = 7,
-   MOD_DEFENSIVE_REGIME = 8
-};
+struct SAssetProfile{string bucket; double riskMultiplier; int maxSpreadPoints; int deviationPoints; double minStopATR; double maxStopATR;};
+struct SSymbolState{string symbol; datetime lastBarTime; int hATR; int hATRRegime; int hADX; int hFastEMA; int hSlowEMA; int hPullbackEMA; int hCoreFastEMA; int hCoreSlowEMA;};
+struct SSignal{bool valid; string symbol; int moduleId; string moduleName; string bucket; int side; double entry; double sl; double tp; double riskDistance; double rr; double atr; double riskMultiplier; string reason;};
 
-struct SAssetProfile
-{
-   string bucket;
-   double riskMultiplier;
-   int maxSpreadPoints;
-   int deviationPoints;
-   double minStopATR;
-   double maxStopATR;
-};
-
-struct SSymbolState
-{
-   string symbol;
-   datetime lastBarTime;
-   int hATR;
-   int hATRRegime;
-   int hADX;
-   int hFastEMA;
-   int hSlowEMA;
-   int hPullbackEMA;
-   int hCoreFastEMA;
-   int hCoreSlowEMA;
-};
-
-struct SSignal
-{
-   bool valid;
-   string symbol;
-   int moduleId;
-   string moduleName;
-   string bucket;
-   int side;
-   double entry;
-   double sl;
-   double tp;
-   double riskDistance;
-   double rr;
-   double atr;
-   double riskMultiplier;
-   int maxHoldBars;
-   string reason;
-};
-
-//====================================================================
-// GLOBALS
-//====================================================================
 SSymbolState States[];
-datetime g_day = 0;
-double g_dayStartEquity = 0.0;
-double g_equityPeak = 0.0;
+datetime g_day=0;
+double g_dayStartEquity=0.0;
+double g_equityPeak=0.0;
 int g_dailySymbolTrades[];
 int g_dailyModuleTrades[];
 
-//====================================================================
-// BASIC UTILS
-//====================================================================
-string TrimString(string value)
-{
-   StringTrimLeft(value);
-   StringTrimRight(value);
-   return value;
-}
+string TrimString(string v){StringTrimLeft(v); StringTrimRight(v); return v;}
+string UpperString(string v){StringToUpper(v); return v;}
+datetime AdjustedTime(datetime t){return t+SessionTimeShiftHours*3600;}
+datetime DayStart(datetime t){MqlDateTime d; TimeToStruct(t,d); d.hour=0; d.min=0; d.sec=0; return StructToTime(d);}
+datetime CurrentDayKey(){return DayStart(AdjustedTime(TimeCurrent()));}
+double PointFor(string s){double p=SymbolInfoDouble(s,SYMBOL_POINT); return p>0?p:0.00001;}
+double NormalizePrice(string s,double p){return NormalizeDouble(p,(int)SymbolInfoInteger(s,SYMBOL_DIGITS));}
 
-string UpperString(string value)
+int ParseSymbols(string src,string &out[])
 {
-   StringToUpper(value);
-   return value;
+   string parts[]; int n=StringSplit(src,',',parts); ArrayResize(out,n); int k=0;
+   for(int i=0;i<n;i++){string s=TrimString(parts[i]); if(s=="") continue; out[k]=s; k++;}
+   ArrayResize(out,k); return k;
 }
+int HashSymbol(string s){int h=0; for(int i=0;i<StringLen(s);i++) h+=StringGetCharacter(s,i)*(i+1); return h%9000;}
+long MagicFor(int moduleId,string symbol){return (long)(MagicBase+moduleId*10000+HashSymbol(symbol));}
+bool IsOurMagic(long magic){return magic>=MagicBase && magic<MagicBase+MODULE_COUNT*10000+9999;}
+int ModuleFromMagic(long magic){if(!IsOurMagic(magic)) return -1; int m=(int)((magic-MagicBase)/10000); return (m>=0 && m<MODULE_COUNT)?m:-1;}
 
-datetime AdjustedTime(const datetime t)
-{
-   return t + SessionTimeShiftHours * 3600;
-}
+double HighestHigh(string s,ENUM_TIMEFRAMES tf,int start,int count){double v=-DBL_MAX; for(int i=start;i<start+count;i++) v=MathMax(v,iHigh(s,tf,i)); return v;}
+double LowestLow(string s,ENUM_TIMEFRAMES tf,int start,int count){double v=DBL_MAX; for(int i=start;i<start+count;i++) v=MathMin(v,iLow(s,tf,i)); return v;}
+double BodySize(string s,ENUM_TIMEFRAMES tf,int shift){return MathAbs(iClose(s,tf,shift)-iOpen(s,tf,shift));}
+bool BullishBar(string s,ENUM_TIMEFRAMES tf,int shift){return iClose(s,tf,shift)>iOpen(s,tf,shift);}
+bool BearishBar(string s,ENUM_TIMEFRAMES tf,int shift){return iClose(s,tf,shift)<iOpen(s,tf,shift);}
 
-datetime DayStart(const datetime t)
+bool TradeTimeAllowed(string s)
 {
-   MqlDateTime dt;
-   TimeToStruct(t, dt);
-   dt.hour = 0;
-   dt.min = 0;
-   dt.sec = 0;
-   return StructToTime(dt);
-}
-
-datetime CurrentDayKey()
-{
-   return DayStart(AdjustedTime(TimeCurrent()));
-}
-
-int ParseSymbols(const string src, string &out[])
-{
-   string parts[];
-   int n = StringSplit(src, ',', parts);
-   ArrayResize(out, n);
-   int k = 0;
-   for(int i = 0; i < n; i++)
-   {
-      string s = TrimString(parts[i]);
-      if(s == "")
-         continue;
-      out[k] = s;
-      k++;
-   }
-   ArrayResize(out, k);
-   return k;
-}
-
-int HashSymbol(const string symbol)
-{
-   int h = 0;
-   for(int i = 0; i < StringLen(symbol); i++)
-      h += StringGetCharacter(symbol, i) * (i + 1);
-   return h % 9000;
-}
-
-long MagicFor(const int moduleId, const string symbol)
-{
-   return (long)(MagicBase + moduleId * 10000 + HashSymbol(symbol));
-}
-
-bool IsOurMagic(const long magic)
-{
-   return magic >= MagicBase && magic < MagicBase + MODULE_COUNT * 10000 + 9999;
-}
-
-int ModuleFromMagic(const long magic)
-{
-   if(!IsOurMagic(magic))
-      return -1;
-   int m = (int)((magic - MagicBase) / 10000);
-   if(m < 0 || m >= MODULE_COUNT)
-      return -1;
-   return m;
-}
-
-double PointFor(const string symbol)
-{
-   double p = SymbolInfoDouble(symbol, SYMBOL_POINT);
-   return p > 0.0 ? p : 0.00001;
-}
-
-double NormalizePrice(const string symbol, const double price)
-{
-   return NormalizeDouble(price, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS));
-}
-
-double HighestHigh(const string symbol, const ENUM_TIMEFRAMES tf, const int startShift, const int count)
-{
-   double v = -DBL_MAX;
-   for(int i = startShift; i < startShift + count; i++)
-      v = MathMax(v, iHigh(symbol, tf, i));
-   return v;
-}
-
-double LowestLow(const string symbol, const ENUM_TIMEFRAMES tf, const int startShift, const int count)
-{
-   double v = DBL_MAX;
-   for(int i = startShift; i < startShift + count; i++)
-      v = MathMin(v, iLow(symbol, tf, i));
-   return v;
-}
-
-double BodySize(const string symbol, const ENUM_TIMEFRAMES tf, const int shift)
-{
-   return MathAbs(iClose(symbol, tf, shift) - iOpen(symbol, tf, shift));
-}
-
-bool BullishBar(const string symbol, const ENUM_TIMEFRAMES tf, const int shift)
-{
-   return iClose(symbol, tf, shift) > iOpen(symbol, tf, shift);
-}
-
-bool BearishBar(const string symbol, const ENUM_TIMEFRAMES tf, const int shift)
-{
-   return iClose(symbol, tf, shift) < iOpen(symbol, tf, shift);
-}
-
-bool TradeTimeAllowed(const string symbol)
-{
-   datetime t = iTime(symbol, EntryTF, 1);
-   if(t <= 0)
-      return false;
-   MqlDateTime dt;
-   TimeToStruct(AdjustedTime(t), dt);
-   if(dt.hour < TradeStartHour || dt.hour >= TradeEndHour)
-      return false;
-   if(AvoidFridayLate && dt.day_of_week == 5 && dt.hour >= FridayCutoffHour)
-      return false;
+   datetime t=iTime(s,EntryTF,1); if(t<=0) return false;
+   MqlDateTime d; TimeToStruct(AdjustedTime(t),d);
+   if(d.hour<TradeStartHour || d.hour>=TradeEndHour) return false;
+   if(AvoidFridayLate && d.day_of_week==5 && d.hour>=FridayCutoffHour) return false;
    return true;
 }
 
-//====================================================================
-// LOGGER
-//====================================================================
 class CLogger
 {
-private:
-   string m_file;
-
+private:string m_file;
 public:
-   void Init(const string fileName)
+   void Init(string fileName)
    {
-      m_file = fileName;
-      int h = FileOpen(m_file, FILE_READ | FILE_CSV | FILE_ANSI);
-      if(h != INVALID_HANDLE)
-      {
-         FileClose(h);
-         return;
-      }
-      h = FileOpen(m_file, FILE_WRITE | FILE_CSV | FILE_ANSI);
-      if(h == INVALID_HANDLE)
-         return;
-      FileWrite(h, "time", "event", "symbol", "module", "bucket", "side", "price", "sl", "tp", "rr", "atr", "spread", "retcode", "note");
-      FileClose(h);
+      m_file=fileName; int h=FileOpen(m_file,FILE_READ|FILE_CSV|FILE_ANSI);
+      if(h!=INVALID_HANDLE){FileClose(h); return;}
+      h=FileOpen(m_file,FILE_WRITE|FILE_CSV|FILE_ANSI); if(h==INVALID_HANDLE) return;
+      FileWrite(h,"time","event","symbol","module","bucket","side","price","sl","tp","rr","atr","spread","retcode","note"); FileClose(h);
    }
-
-   void Write(const string eventType,
-              const string symbol,
-              const string moduleName,
-              const string bucket,
-              const string side,
-              const double price,
-              const double sl,
-              const double tp,
-              const double rr,
-              const double atr,
-              const int spread,
-              const uint retcode,
-              const string note)
+   void Write(string ev,string s,string mod,string bucket,string side,double price,double sl,double tp,double rr,double atr,int spread,uint ret,string note)
    {
-      int h = FileOpen(m_file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI);
-      if(h != INVALID_HANDLE)
-      {
-         int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-         FileSeek(h, 0, SEEK_END);
-         FileWrite(h,
-                   TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
-                   eventType,
-                   symbol,
-                   moduleName,
-                   bucket,
-                   side,
-                   DoubleToString(price, digits),
-                   DoubleToString(sl, digits),
-                   DoubleToString(tp, digits),
-                   DoubleToString(rr, 2),
-                   DoubleToString(atr, digits),
-                   spread,
-                   retcode,
-                   note);
-         FileClose(h);
-      }
-
-      if(DebugLogs || eventType == "ORDER_ERROR" || eventType == "SKIP" || eventType == "CLOSE_ERROR")
-         Print(eventType, " ", symbol, " ", moduleName, " ", side, " ", note);
+      int h=FileOpen(m_file,FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI);
+      if(h!=INVALID_HANDLE){int digits=(int)SymbolInfoInteger(s,SYMBOL_DIGITS); FileSeek(h,0,SEEK_END); FileWrite(h,TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),ev,s,mod,bucket,side,DoubleToString(price,digits),DoubleToString(sl,digits),DoubleToString(tp,digits),DoubleToString(rr,2),DoubleToString(atr,digits),spread,ret,note); FileClose(h);}
+      if(DebugLogs || ev=="ORDER_ERROR" || ev=="SKIP" || ev=="CLOSE_ERROR" || ev=="SLTP_ERROR") Print(ev," ",s," ",mod," ",side," ",note);
    }
 };
-
 CLogger LOG;
 
-//====================================================================
-// PROFILE / MODULE CONFIG
-//====================================================================
 class CProfileEngine
 {
 public:
-   SAssetProfile Profile(const string symbol)
+   SAssetProfile Profile(string symbol)
    {
-      SAssetProfile p;
-      string s = UpperString(symbol);
-      p.bucket = "FX_USD";
-      p.riskMultiplier = 1.0;
-      p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 45;
-      p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 25;
-      p.minStopATR = 0.55;
-      p.maxStopATR = 5.00;
-
-      if(StringFind(s, "XAU") >= 0 || StringFind(s, "GOLD") >= 0)
-      {
-         p.bucket = "METALS";
-         p.riskMultiplier = 0.70;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 150;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 60;
-         p.minStopATR = 0.75;
-         p.maxStopATR = 6.50;
-      }
-      else if(StringFind(s, "BTC") >= 0 || StringFind(s, "ETH") >= 0)
-      {
-         p.bucket = "CRYPTO";
-         p.riskMultiplier = 0.45;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 650;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 120;
-         p.minStopATR = 0.90;
-         p.maxStopATR = 8.00;
-      }
-      else if(StringFind(s, "NAS") >= 0 || StringFind(s, "US30") >= 0 || StringFind(s, "SPX") >= 0 || StringFind(s, "GER") >= 0 || StringFind(s, "DAX") >= 0)
-      {
-         p.bucket = "INDICES";
-         p.riskMultiplier = 0.60;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 300;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 90;
-         p.minStopATR = 0.80;
-         p.maxStopATR = 7.00;
-      }
-      else if(StringFind(s, "JPY") >= 0)
-      {
-         p.bucket = "FX_JPY";
-         p.riskMultiplier = 0.90;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 55;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 30;
-         p.minStopATR = 0.60;
-         p.maxStopATR = 5.50;
-      }
-      else if(StringFind(s, "GBP") >= 0)
-      {
-         p.bucket = "FX_GBP";
-         p.riskMultiplier = 0.85;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 50;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 30;
-      }
-      else if(StringFind(s, "AUD") >= 0 || StringFind(s, "NZD") >= 0)
-      {
-         p.bucket = "FX_AUD_NZD";
-         p.riskMultiplier = 1.0;
-         p.maxSpreadPoints = ManualMaxSpreadPoints > 0 ? ManualMaxSpreadPoints : 45;
-         p.deviationPoints = ManualDeviationPoints > 0 ? ManualDeviationPoints : 30;
-      }
+      SAssetProfile p; string s=UpperString(symbol);
+      p.bucket="FX_USD"; p.riskMultiplier=1.0; p.maxSpreadPoints=ManualMaxSpreadPoints>0?ManualMaxSpreadPoints:42; p.deviationPoints=ManualDeviationPoints>0?ManualDeviationPoints:25; p.minStopATR=0.70; p.maxStopATR=5.00;
+      if(StringFind(s,"XAU")>=0 || StringFind(s,"GOLD")>=0){p.bucket="METALS"; p.riskMultiplier=0.65; p.maxSpreadPoints=ManualMaxSpreadPoints>0?ManualMaxSpreadPoints:140; p.deviationPoints=ManualDeviationPoints>0?ManualDeviationPoints:60; p.minStopATR=0.85; p.maxStopATR=6.50;}
+      else if(StringFind(s,"BTC")>=0 || StringFind(s,"ETH")>=0){p.bucket="CRYPTO"; p.riskMultiplier=0.45; p.maxSpreadPoints=ManualMaxSpreadPoints>0?ManualMaxSpreadPoints:650; p.deviationPoints=ManualDeviationPoints>0?ManualDeviationPoints:120; p.minStopATR=1.00; p.maxStopATR=8.00;}
+      else if(StringFind(s,"NAS")>=0 || StringFind(s,"US30")>=0 || StringFind(s,"SPX")>=0 || StringFind(s,"DAX")>=0 || StringFind(s,"GER")>=0){p.bucket="INDICES"; p.riskMultiplier=0.60; p.maxSpreadPoints=ManualMaxSpreadPoints>0?ManualMaxSpreadPoints:300; p.deviationPoints=ManualDeviationPoints>0?ManualDeviationPoints:90; p.minStopATR=0.90; p.maxStopATR=7.00;}
+      else if(StringFind(s,"JPY")>=0){p.bucket="FX_JPY"; p.riskMultiplier=0.90; p.maxSpreadPoints=ManualMaxSpreadPoints>0?ManualMaxSpreadPoints:50; p.deviationPoints=ManualDeviationPoints>0?ManualDeviationPoints:30; p.minStopATR=0.75; p.maxStopATR=5.50;}
+      else if(StringFind(s,"GBP")>=0){p.bucket="FX_GBP"; p.riskMultiplier=0.85; p.maxSpreadPoints=ManualMaxSpreadPoints>0?ManualMaxSpreadPoints:48; p.deviationPoints=ManualDeviationPoints>0?ManualDeviationPoints:30;}
+      else if(StringFind(s,"AUD")>=0 || StringFind(s,"NZD")>=0){p.bucket="FX_AUD_NZD"; p.maxSpreadPoints=ManualMaxSpreadPoints>0?ManualMaxSpreadPoints:42; p.deviationPoints=ManualDeviationPoints>0?ManualDeviationPoints:30;}
       return p;
    }
 };
-
 CProfileEngine PROFILE;
 
-string ModuleName(const int moduleId)
+string ModuleName(int id)
 {
-   switch(moduleId)
-   {
-      case MOD_TREND_PULLBACK: return "TrendPullback";
-      case MOD_MOMENTUM_BREAKOUT: return "MomentumBreakout";
-      case MOD_LATE_CYCLE_FAST_MOVE: return "LateCycleFastMove";
-      case MOD_DOWNSIDE_RISK_OFF: return "DownsideRiskOff";
-      case MOD_CORRECTION_REBOUND: return "CorrectionRebound";
-      case MOD_MTF_TREND_CORE: return "MTFTrendCore";
-      case MOD_AVWAP_LIQUIDITY: return "AVWAPLiquidity";
-      case MOD_VOLATILITY_EXPANSION: return "VolatilityExpansion";
-      case MOD_DEFENSIVE_REGIME: return "DefensiveRegime";
-   }
-   return "Unknown";
+   switch(id){case MOD_TREND_PULLBACK:return "TrendPullback"; case MOD_MOMENTUM_BREAKOUT:return "MomentumBreakout"; case MOD_LATE_CYCLE_FAST_MOVE:return "LateCycleFastMove"; case MOD_DOWNSIDE_RISK_OFF:return "DownsideRiskOff"; case MOD_CORRECTION_REBOUND:return "CorrectionRebound"; case MOD_MTF_TREND_CORE:return "MTFTrendCore"; case MOD_AVWAP_LIQUIDITY:return "AVWAPLiquidity"; case MOD_VOLATILITY_EXPANSION:return "VolatilityExpansion"; case MOD_DEFENSIVE_REGIME:return "DefensiveRegime";} return "Unknown";
+}
+bool ModuleEnabled(int id)
+{
+   switch(id){case MOD_TREND_PULLBACK:return EnableTrendPullback; case MOD_MOMENTUM_BREAKOUT:return EnableMomentumBreakout; case MOD_LATE_CYCLE_FAST_MOVE:return EnableLateCycleFastMove; case MOD_DOWNSIDE_RISK_OFF:return EnableDownsideRiskOff; case MOD_CORRECTION_REBOUND:return EnableCorrectionRebound; case MOD_MTF_TREND_CORE:return EnableMTFTrendCore; case MOD_AVWAP_LIQUIDITY:return EnableAVWAPLiquidity; case MOD_VOLATILITY_EXPANSION:return EnableVolatilityExpansion;} return false;
+}
+double ModuleRiskMultiplier(int id){switch(id){case MOD_TREND_PULLBACK:return RiskTrendPullback; case MOD_MOMENTUM_BREAKOUT:return RiskMomentumBreakout; case MOD_LATE_CYCLE_FAST_MOVE:return RiskLateCycleFastMove; case MOD_DOWNSIDE_RISK_OFF:return RiskDownsideRiskOff; case MOD_CORRECTION_REBOUND:return RiskCorrectionRebound; case MOD_MTF_TREND_CORE:return RiskMTFTrendCore; case MOD_AVWAP_LIQUIDITY:return RiskAVWAPLiquidity; case MOD_VOLATILITY_EXPANSION:return RiskVolatilityExpansion;} return 0.0;}
+double ModuleRR(int id){switch(id){case MOD_LATE_CYCLE_FAST_MOVE:return 1.35; case MOD_CORRECTION_REBOUND:return 1.90; case MOD_MTF_TREND_CORE:return 2.00; case MOD_AVWAP_LIQUIDITY:return 1.70; case MOD_VOLATILITY_EXPANSION:return 1.80; default:return DefaultRR;}}
+int ModuleMaxHoldBars(int id){switch(id){case MOD_LATE_CYCLE_FAST_MOVE:return 16; case MOD_CORRECTION_REBOUND:return 160; case MOD_MTF_TREND_CORE:return 96; case MOD_AVWAP_LIQUIDITY:return 32; case MOD_VOLATILITY_EXPANSION:return 24; default:return 42;}}
+
+double BufferValue(int handle,int buffer,int shift){double v[]; ArraySetAsSeries(v,true); if(handle==INVALID_HANDLE) return 0; if(CopyBuffer(handle,buffer,shift,1,v)!=1) return 0; return v[0];}
+double ATRv(int idx,int shift=1){return BufferValue(States[idx].hATR,0,shift);} double ADXv(int idx,int shift=1){return BufferValue(States[idx].hADX,0,shift);} double EMAFastv(int idx,int shift=1){return BufferValue(States[idx].hFastEMA,0,shift);} double EMASlowv(int idx,int shift=1){return BufferValue(States[idx].hSlowEMA,0,shift);} double EMAPullbackv(int idx,int shift=1){return BufferValue(States[idx].hPullbackEMA,0,shift);} double CoreFastv(int idx,int shift=1){return BufferValue(States[idx].hCoreFastEMA,0,shift);} double CoreSlowv(int idx,int shift=1){return BufferValue(States[idx].hCoreSlowEMA,0,shift);}
+
+int TrendDirection(int idx){double f=EMAFastv(idx,1),s=EMASlowv(idx,1),fp=EMAFastv(idx,4); if(f<=0||s<=0||fp<=0) return 0; if(f>s&&f>=fp) return 1; if(f<s&&f<=fp) return -1; return 0;}
+int CoreTrendDirection(int idx){double f=CoreFastv(idx,1),s=CoreSlowv(idx,1); if(f<=0||s<=0) return 0; if(f>s) return 1; if(f<s) return -1; return 0;}
+
+bool CalculateAVWAP(string symbol,double &vwap,double &upper,double &lower)
+{
+   vwap=0; upper=0; lower=0; MqlRates r[]; ArraySetAsSeries(r,true); int copied=CopyRates(symbol,EntryTF,0,AVWAPMaxBars,r); if(copied<30) return false;
+   datetime ref=r[1].time,adj=AdjustedTime(ref),today=DayStart(adj); datetime london=today+AVWAPLondonAnchorHour*3600,ny=today+AVWAPNewYorkAnchorHour*3600; datetime anchorAdj=adj>=ny?ny:(adj>=london?london:DayStart(adj-86400)+AVWAPNewYorkAnchorHour*3600); datetime anchor=anchorAdj-SessionTimeShiftHours*3600;
+   double sumPV=0,sumV=0; int used=0; for(int i=1;i<copied;i++){if(r[i].time<anchor) break; double typ=(r[i].high+r[i].low+r[i].close)/3.0,vol=(double)MathMax((long)1,r[i].tick_volume); sumPV+=typ*vol; sumV+=vol; used++;}
+   if(used<4){sumPV=0; sumV=0; used=0; int fb=MathMin(48,copied-1); for(int k=1;k<=fb;k++){double typ=(r[k].high+r[k].low+r[k].close)/3.0,vol=(double)MathMax((long)1,r[k].tick_volume); sumPV+=typ*vol; sumV+=vol; used++;}}
+   if(sumV<=0||used<4) return false; vwap=sumPV/sumV; double var=0; for(int j=1;j<=used;j++){double typ=(r[j].high+r[j].low+r[j].close)/3.0,vol=(double)MathMax((long)1,r[j].tick_volume); var+=vol*MathPow(typ-vwap,2.0);} var/=sumV; double sd=MathSqrt(MathMax(var,0.0)); if(sd<=0) sd=PointFor(symbol)*10.0; upper=vwap+sd*AVWAPBandSD; lower=vwap-sd*AVWAPBandSD; return true;
 }
 
-bool ModuleEnabled(const int moduleId)
+double SyntheticDelta(string symbol,int shift){double h=iHigh(symbol,EntryTF,shift),l=iLow(symbol,EntryTF,shift),c=iClose(symbol,EntryTF,shift); long vol=iVolume(symbol,EntryTF,shift); double range=h-l; if(range<=0) return 0; return (double)MathMax((long)1,vol)*(((c-l)/range-0.5)*2.0);}
+bool CVDConfirms(string symbol,int side){double d1=SyntheticDelta(symbol,1),d2=SyntheticDelta(symbol,2),d3=SyntheticDelta(symbol,3),d4=SyntheticDelta(symbol,4); double now=d1+d2+d3,past=d2+d3+d4; if(side==1) return (iLow(symbol,EntryTF,1)<iLow(symbol,EntryTF,3)&&now>past)||d1>MathAbs(d2+d3)*0.45; if(side==-1) return (iHigh(symbol,EntryTF,1)>iHigh(symbol,EntryTF,3)&&now<past)||d1<-MathAbs(d2+d3)*0.45; return false;}
+bool LiquiditySweepReclaim(string symbol,int side){double ph=iHigh(symbol,PERIOD_D1,1),pl=iLow(symbol,PERIOD_D1,1),rh=HighestHigh(symbol,EntryTF,2,RollingLiquidityLookback),rl=LowestLow(symbol,EntryTF,2,RollingLiquidityLookback); double c=iClose(symbol,EntryTF,1),h=iHigh(symbol,EntryTF,1),l=iLow(symbol,EntryTF,1); if(side==1) return (pl>0&&l<pl&&c>pl)||(rl>0&&l<rl&&c>rl); if(side==-1) return (ph>0&&h>ph&&c<ph)||(rh>0&&h>rh&&c<rh); return false;}
+
+bool DefensiveBlocks(int idx,SAssetProfile &profile,string &reason)
 {
-   switch(moduleId)
-   {
-      case MOD_TREND_PULLBACK: return EnableTrendPullback;
-      case MOD_MOMENTUM_BREAKOUT: return EnableMomentumBreakout;
-      case MOD_LATE_CYCLE_FAST_MOVE: return EnableLateCycleFastMove;
-      case MOD_DOWNSIDE_RISK_OFF: return EnableDownsideRiskOff;
-      case MOD_CORRECTION_REBOUND: return EnableCorrectionRebound;
-      case MOD_MTF_TREND_CORE: return EnableMTFTrendCore;
-      case MOD_AVWAP_LIQUIDITY: return EnableAVWAPLiquidity;
-      case MOD_VOLATILITY_EXPANSION: return EnableVolatilityExpansion;
-      case MOD_DEFENSIVE_REGIME: return EnableDefensiveRegime;
-   }
-   return false;
+   if(!EnableDefensiveRegime) return false; string s=States[idx].symbol; int spread=(int)SymbolInfoInteger(s,SYMBOL_SPREAD); if(spread>profile.maxSpreadPoints){reason="spread_above_profile"; return true;} double eq=AccountInfoDouble(ACCOUNT_EQUITY); if(g_equityPeak>0&&(g_equityPeak-eq)/g_equityPeak*100.0>=EquityStopDDPercent){reason="equity_stop_dd"; return true;} double atr=ATRv(idx,1),price=iClose(s,EntryTF,1); if(price>0&&atr/price>0.020&&profile.bucket!="CRYPTO"){reason="abnormal_atr_percent"; return true;} reason="ok"; return false;
 }
 
-double ModuleRiskMultiplier(const int moduleId)
-{
-   switch(moduleId)
-   {
-      case MOD_TREND_PULLBACK: return RiskTrendPullback;
-      case MOD_MOMENTUM_BREAKOUT: return RiskMomentumBreakout;
-      case MOD_LATE_CYCLE_FAST_MOVE: return RiskLateCycleFastMove;
-      case MOD_DOWNSIDE_RISK_OFF: return RiskDownsideRiskOff;
-      case MOD_CORRECTION_REBOUND: return RiskCorrectionRebound;
-      case MOD_MTF_TREND_CORE: return RiskMTFTrendCore;
-      case MOD_AVWAP_LIQUIDITY: return RiskAVWAPLiquidity;
-      case MOD_VOLATILITY_EXPANSION: return RiskVolatilityExpansion;
-   }
-   return 0.0;
-}
-
-double ModuleRR(const int moduleId)
-{
-   switch(moduleId)
-   {
-      case MOD_LATE_CYCLE_FAST_MOVE: return 1.35;
-      case MOD_CORRECTION_REBOUND: return 1.85;
-      case MOD_MTF_TREND_CORE: return 2.00;
-      case MOD_AVWAP_LIQUIDITY: return 1.60;
-      case MOD_VOLATILITY_EXPANSION: return 1.75;
-      default: return DefaultRR;
-   }
-}
-
-int ModuleMaxHoldBars(const int moduleId)
-{
-   switch(moduleId)
-   {
-      case MOD_LATE_CYCLE_FAST_MOVE: return 18;
-      case MOD_CORRECTION_REBOUND: return 240;
-      case MOD_MTF_TREND_CORE: return 120;
-      case MOD_AVWAP_LIQUIDITY: return 32;
-      case MOD_VOLATILITY_EXPANSION: return 28;
-      default: return 48;
-   }
-}
-
-//====================================================================
-// INDICATOR HELPERS
-//====================================================================
-double BufferValue(const int handle, const int buffer, const int shift)
-{
-   double v[];
-   ArraySetAsSeries(v, true);
-   if(handle == INVALID_HANDLE)
-      return 0.0;
-   if(CopyBuffer(handle, buffer, shift, 1, v) != 1)
-      return 0.0;
-   return v[0];
-}
-
-double ATR(const int idx, const int shift=1)
-{
-   return BufferValue(States[idx].hATR, 0, shift);
-}
-
-double ADX(const int idx, const int shift=1)
-{
-   return BufferValue(States[idx].hADX, 0, shift);
-}
-
-double EMAFast(const int idx, const int shift=1)
-{
-   return BufferValue(States[idx].hFastEMA, 0, shift);
-}
-
-double EMASlow(const int idx, const int shift=1)
-{
-   return BufferValue(States[idx].hSlowEMA, 0, shift);
-}
-
-double EMAPullback(const int idx, const int shift=1)
-{
-   return BufferValue(States[idx].hPullbackEMA, 0, shift);
-}
-
-double CoreFast(const int idx, const int shift=1)
-{
-   return BufferValue(States[idx].hCoreFastEMA, 0, shift);
-}
-
-double CoreSlow(const int idx, const int shift=1)
-{
-   return BufferValue(States[idx].hCoreSlowEMA, 0, shift);
-}
-
-int TrendDirection(const int idx)
-{
-   double fast = EMAFast(idx, 1);
-   double slow = EMASlow(idx, 1);
-   double fastPrev = EMAFast(idx, 3);
-   if(fast <= 0 || slow <= 0 || fastPrev <= 0)
-      return 0;
-   if(fast > slow && fast >= fastPrev)
-      return 1;
-   if(fast < slow && fast <= fastPrev)
-      return -1;
-   return 0;
-}
-
-int CoreTrendDirection(const int idx)
-{
-   double fast = CoreFast(idx, 1);
-   double slow = CoreSlow(idx, 1);
-   if(fast <= 0 || slow <= 0)
-      return 0;
-   if(fast > slow)
-      return 1;
-   if(fast < slow)
-      return -1;
-   return 0;
-}
-
-//====================================================================
-// AVWAP / LIQUIDITY HELPERS
-//====================================================================
-bool CalculateAVWAP(const string symbol, double &vwap, double &sd, double &upper, double &lower)
-{
-   vwap = 0.0;
-   sd = 0.0;
-   upper = 0.0;
-   lower = 0.0;
-
-   MqlRates rates[];
-   ArraySetAsSeries(rates, true);
-   int copied = CopyRates(symbol, EntryTF, 0, AVWAPMaxBars, rates);
-   if(copied < 20)
-      return false;
-
-   datetime ref = rates[1].time;
-   datetime adj = AdjustedTime(ref);
-   datetime today = DayStart(adj);
-   datetime london = today + AVWAPLondonAnchorHour * 3600;
-   datetime ny = today + AVWAPNewYorkAnchorHour * 3600;
-   datetime anchorAdj = adj >= ny ? ny : (adj >= london ? london : DayStart(adj - 86400) + AVWAPNewYorkAnchorHour * 3600);
-   datetime anchor = anchorAdj - SessionTimeShiftHours * 3600;
-
-   double sumPV = 0.0;
-   double sumV = 0.0;
-   int used = 0;
-   for(int i = 1; i < copied; i++)
-   {
-      if(rates[i].time < anchor)
-         break;
-      double typical = (rates[i].high + rates[i].low + rates[i].close) / 3.0;
-      double vol = (double)MathMax((long)1, rates[i].tick_volume);
-      sumPV += typical * vol;
-      sumV += vol;
-      used++;
-   }
-
-   if(used < 4)
-   {
-      int fallback = MathMin(48, copied - 1);
-      sumPV = 0.0;
-      sumV = 0.0;
-      used = 0;
-      for(int k = 1; k <= fallback; k++)
-      {
-         double typical = (rates[k].high + rates[k].low + rates[k].close) / 3.0;
-         double vol = (double)MathMax((long)1, rates[k].tick_volume);
-         sumPV += typical * vol;
-         sumV += vol;
-         used++;
-      }
-   }
-
-   if(sumV <= 0.0 || used < 4)
-      return false;
-
-   vwap = sumPV / sumV;
-   double variance = 0.0;
-   for(int j = 1; j <= used; j++)
-   {
-      double typical = (rates[j].high + rates[j].low + rates[j].close) / 3.0;
-      double vol = (double)MathMax((long)1, rates[j].tick_volume);
-      variance += vol * MathPow(typical - vwap, 2.0);
-   }
-   variance /= sumV;
-   sd = MathSqrt(MathMax(variance, 0.0));
-   if(sd <= 0.0)
-      sd = PointFor(symbol) * 10.0;
-   upper = vwap + sd * AVWAPBandSD;
-   lower = vwap - sd * AVWAPBandSD;
-   return true;
-}
-
-double SyntheticDelta(const string symbol, const int shift)
-{
-   double high = iHigh(symbol, EntryTF, shift);
-   double low = iLow(symbol, EntryTF, shift);
-   double close = iClose(symbol, EntryTF, shift);
-   long volume = iVolume(symbol, EntryTF, shift);
-   double range = high - low;
-   if(range <= 0)
-      return 0.0;
-   double loc = ((close - low) / range - 0.5) * 2.0;
-   return (double)MathMax((long)1, volume) * loc;
-}
-
-bool CVDConfirms(const string symbol, const int side)
-{
-   double d1 = SyntheticDelta(symbol, 1);
-   double d2 = SyntheticDelta(symbol, 2);
-   double d3 = SyntheticDelta(symbol, 3);
-   double d4 = SyntheticDelta(symbol, 4);
-   double cvdNow = d1 + d2 + d3;
-   double cvdPast = d2 + d3 + d4;
-   if(side == 1)
-      return (iLow(symbol, EntryTF, 1) < iLow(symbol, EntryTF, 3) && cvdNow > cvdPast) || d1 > MathAbs(d2 + d3) * 0.35;
-   if(side == -1)
-      return (iHigh(symbol, EntryTF, 1) > iHigh(symbol, EntryTF, 3) && cvdNow < cvdPast) || d1 < -MathAbs(d2 + d3) * 0.35;
-   return false;
-}
-
-bool LiquiditySweepReclaim(const string symbol, const int side, double &level, double &extreme)
-{
-   double asiaHigh = -DBL_MAX;
-   double asiaLow = DBL_MAX;
-   datetime today = DayStart(AdjustedTime(iTime(symbol, EntryTF, 1)));
-   for(int i = 1; i < 300; i++)
-   {
-      datetime t = iTime(symbol, EntryTF, i);
-      if(t <= 0 || AdjustedTime(t) < today)
-         break;
-      MqlDateTime dt;
-      TimeToStruct(AdjustedTime(t), dt);
-      if(dt.hour >= AsiaStartHour && dt.hour < AsiaEndHour)
-      {
-         asiaHigh = MathMax(asiaHigh, iHigh(symbol, EntryTF, i));
-         asiaLow = MathMin(asiaLow, iLow(symbol, EntryTF, i));
-      }
-   }
-
-   double prevHigh = iHigh(symbol, PERIOD_D1, 1);
-   double prevLow = iLow(symbol, PERIOD_D1, 1);
-   double rollHigh = HighestHigh(symbol, EntryTF, 2, RollingLiquidityLookback);
-   double rollLow = LowestLow(symbol, EntryTF, 2, RollingLiquidityLookback);
-
-   double close = iClose(symbol, EntryTF, 1);
-   double high = iHigh(symbol, EntryTF, 1);
-   double low = iLow(symbol, EntryTF, 1);
-
-   if(side == 1)
-   {
-      double lows[3];
-      lows[0] = asiaLow == DBL_MAX ? 0.0 : asiaLow;
-      lows[1] = prevLow;
-      lows[2] = rollLow;
-      for(int k = 0; k < 3; k++)
-      {
-         if(lows[k] > 0.0 && low < lows[k] && close > lows[k])
-         {
-            level = lows[k];
-            extreme = low;
-            return true;
-         }
-      }
-   }
-   if(side == -1)
-   {
-      double highs[3];
-      highs[0] = asiaHigh == -DBL_MAX ? 0.0 : asiaHigh;
-      highs[1] = prevHigh;
-      highs[2] = rollHigh;
-      for(int k = 0; k < 3; k++)
-      {
-         if(highs[k] > 0.0 && high > highs[k] && close < highs[k])
-         {
-            level = highs[k];
-            extreme = high;
-            return true;
-         }
-      }
-   }
-   return false;
-}
-
-//====================================================================
-// DEFENSIVE REGIME
-//====================================================================
-bool DefensiveRegimeBlocks(const int idx, const SAssetProfile &profile, string &reason)
-{
-   if(!EnableDefensiveRegime)
-      return false;
-
-   string symbol = States[idx].symbol;
-   int spread = (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
-   if(spread > profile.maxSpreadPoints)
-   {
-      reason = "spread_above_profile";
-      return true;
-   }
-
-   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   if(g_equityPeak > 0.0)
-   {
-      double peakDD = (g_equityPeak - equity) / g_equityPeak * 100.0;
-      if(peakDD >= EquityKillDDPercent)
-      {
-         reason = "equity_kill_dd";
-         return true;
-      }
-   }
-
-   double atr = ATR(idx, 1);
-   double price = iClose(symbol, EntryTF, 1);
-   if(price > 0.0 && atr / price > 0.018 && profile.bucket != "CRYPTO")
-   {
-      reason = "abnormal_atr_percent";
-      return true;
-   }
-
-   reason = "ok";
-   return false;
-}
-
-//====================================================================
-// SIGNAL ENGINE
-//====================================================================
 class CSignalEngine
 {
 private:
-   bool PrepareSignal(const int idx, const int moduleId, const int side, const string reason, SSignal &sig)
+   bool Prepare(int idx,int moduleId,int side,string reason,SSignal &sig)
    {
-      string symbol = States[idx].symbol;
-      SAssetProfile profile = PROFILE.Profile(symbol);
-      double atr = ATR(idx, 1);
-      if(atr <= 0.0 || side == 0)
-         return false;
-
-      double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-      if(ask <= 0.0 || bid <= 0.0)
-         return false;
-
-      double entry = side == 1 ? ask : bid;
-      double swingLow = LowestLow(symbol, EntryTF, 1, SwingLookback);
-      double swingHigh = HighestHigh(symbol, EntryTF, 1, SwingLookback);
-      double sl = side == 1 ? MathMin(swingLow, entry - atr * StopATRMult) : MathMax(swingHigh, entry + atr * StopATRMult);
-      double risk = MathAbs(entry - sl);
-
-      if(risk < atr * profile.minStopATR)
-      {
-         sl = side == 1 ? entry - atr * profile.minStopATR : entry + atr * profile.minStopATR;
-         risk = MathAbs(entry - sl);
-      }
-      if(risk > atr * profile.maxStopATR)
-         return false;
-
-      double rr = MathMax(MinimumRR, ModuleRR(moduleId));
-      double tp = side == 1 ? entry + risk * rr : entry - risk * rr;
-
-      sig.valid = true;
-      sig.symbol = symbol;
-      sig.moduleId = moduleId;
-      sig.moduleName = ModuleName(moduleId);
-      sig.bucket = profile.bucket;
-      sig.side = side;
-      sig.entry = entry;
-      sig.sl = sl;
-      sig.tp = tp;
-      sig.riskDistance = risk;
-      sig.rr = rr;
-      sig.atr = atr;
-      sig.riskMultiplier = ModuleRiskMultiplier(moduleId) * profile.riskMultiplier;
-      sig.maxHoldBars = ModuleMaxHoldBars(moduleId);
-      sig.reason = reason;
-      return true;
+      string s=States[idx].symbol; SAssetProfile p=PROFILE.Profile(s); double atr=ATRv(idx,1); if(atr<=0||side==0) return false; double ask=SymbolInfoDouble(s,SYMBOL_ASK),bid=SymbolInfoDouble(s,SYMBOL_BID); if(ask<=0||bid<=0) return false; double entry=side==1?ask:bid;
+      double swingLow=LowestLow(s,EntryTF,1,SwingLookback), swingHigh=HighestHigh(s,EntryTF,1,SwingLookback); double sl=side==1?MathMin(swingLow,entry-atr*StopATRMult):MathMax(swingHigh,entry+atr*StopATRMult); double risk=MathAbs(entry-sl); if(risk<atr*p.minStopATR){sl=side==1?entry-atr*p.minStopATR:entry+atr*p.minStopATR; risk=MathAbs(entry-sl);} if(risk>atr*p.maxStopATR) return false;
+      double rr=MathMax(MinimumRR,ModuleRR(moduleId)); double tp=side==1?entry+risk*rr:entry-risk*rr; sig.valid=true; sig.symbol=s; sig.moduleId=moduleId; sig.moduleName=ModuleName(moduleId); sig.bucket=p.bucket; sig.side=side; sig.entry=entry; sig.sl=sl; sig.tp=tp; sig.riskDistance=risk; sig.rr=rr; sig.atr=atr; sig.riskMultiplier=ModuleRiskMultiplier(moduleId)*p.riskMultiplier; sig.reason=reason; return true;
    }
-
-   bool TrendPullback(const int idx, SSignal &sig)
-   {
-      int dir = TrendDirection(idx);
-      if(dir == 0 || ADX(idx, 1) < TrendADXMin)
-         return false;
-
-      string symbol = States[idx].symbol;
-      double ema = EMAPullback(idx, 1);
-      double atr = ATR(idx, 1);
-      if(ema <= 0 || atr <= 0)
-         return false;
-
-      if(dir == 1)
-      {
-         bool pull = iLow(symbol, EntryTF, 1) <= ema || iLow(symbol, EntryTF, 2) <= ema;
-         bool reclaim = iClose(symbol, EntryTF, 1) > ema && BullishBar(symbol, EntryTF, 1);
-         bool impulse = BodySize(symbol, EntryTF, 1) >= atr * MinBodyATR;
-         if(pull && reclaim && impulse)
-            return PrepareSignal(idx, MOD_TREND_PULLBACK, 1, "trend_pullback_reclaim", sig);
-      }
-      else if(dir == -1)
-      {
-         bool pull = iHigh(symbol, EntryTF, 1) >= ema || iHigh(symbol, EntryTF, 2) >= ema;
-         bool reclaim = iClose(symbol, EntryTF, 1) < ema && BearishBar(symbol, EntryTF, 1);
-         bool impulse = BodySize(symbol, EntryTF, 1) >= atr * MinBodyATR;
-         if(pull && reclaim && impulse)
-            return PrepareSignal(idx, MOD_TREND_PULLBACK, -1, "trend_pullback_reclaim", sig);
-      }
-      return false;
-   }
-
-   bool MomentumBreakout(const int idx, SSignal &sig)
-   {
-      string symbol = States[idx].symbol;
-      double atr = ATR(idx, 1);
-      if(atr <= 0 || ADX(idx, 1) < TrendADXMin)
-         return false;
-
-      double close = iClose(symbol, EntryTF, 1);
-      double hi = HighestHigh(symbol, EntryTF, 2, BreakoutLookback);
-      double lo = LowestLow(symbol, EntryTF, 2, BreakoutLookback);
-      double body = BodySize(symbol, EntryTF, 1);
-
-      if(close > hi && BullishBar(symbol, EntryTF, 1) && body >= atr * MomentumBodyATR)
-         return PrepareSignal(idx, MOD_MOMENTUM_BREAKOUT, 1, "donchian_momentum_breakout", sig);
-      if(close < lo && BearishBar(symbol, EntryTF, 1) && body >= atr * MomentumBodyATR)
-         return PrepareSignal(idx, MOD_MOMENTUM_BREAKOUT, -1, "donchian_momentum_breakout", sig);
-      return false;
-   }
-
-   bool LateCycleFastMove(const int idx, SSignal &sig)
-   {
-      string symbol = States[idx].symbol;
-      int dir = TrendDirection(idx);
-      double adx = ADX(idx, 1);
-      double atr = ATR(idx, 1);
-      double fast = EMAFast(idx, 1);
-      double close = iClose(symbol, EntryTF, 1);
-      if(dir == 0 || adx < StrongTrendADX || atr <= 0 || fast <= 0)
-         return false;
-
-      double extension = MathAbs(close - fast) / atr;
-      if(extension < 1.25)
-         return false;
-
-      if(dir == 1 && BullishBar(symbol, EntryTF, 1) && BodySize(symbol, EntryTF, 1) >= atr * MomentumBodyATR)
-         return PrepareSignal(idx, MOD_LATE_CYCLE_FAST_MOVE, 1, "late_cycle_fast_long", sig);
-      if(dir == -1 && BearishBar(symbol, EntryTF, 1) && BodySize(symbol, EntryTF, 1) >= atr * MomentumBodyATR)
-         return PrepareSignal(idx, MOD_LATE_CYCLE_FAST_MOVE, -1, "late_cycle_fast_short", sig);
-      return false;
-   }
-
-   bool DownsideRiskOff(const int idx, SSignal &sig)
-   {
-      string symbol = States[idx].symbol;
-      int dir = TrendDirection(idx);
-      double atr = ATR(idx, 1);
-      if(dir != -1 || atr <= 0 || ADX(idx, 1) < TrendADXMin)
-         return false;
-      double close = iClose(symbol, EntryTF, 1);
-      double lo = LowestLow(symbol, EntryTF, 2, BreakoutLookback / 2);
-      if(close < lo && BearishBar(symbol, EntryTF, 1) && BodySize(symbol, EntryTF, 1) >= atr * MinBodyATR)
-         return PrepareSignal(idx, MOD_DOWNSIDE_RISK_OFF, -1, "downside_trend_participation", sig);
-      return false;
-   }
-
-   bool CorrectionRebound(const int idx, SSignal &sig)
-   {
-      string symbol = States[idx].symbol;
-      double atr = ATR(idx, 1);
-      double fast = EMAFast(idx, 1);
-      if(atr <= 0 || fast <= 0 || ADX(idx, 1) > RangeADXMax + 7.0)
-         return false;
-
-      double close = iClose(symbol, EntryTF, 1);
-      double deviation = (fast - close) / atr;
-      if(deviation >= RangeDeviationATR && BullishBar(symbol, EntryTF, 1))
-         return PrepareSignal(idx, MOD_CORRECTION_REBOUND, 1, "correction_rebound_discount", sig);
-      return false;
-   }
-
-   bool MTFTrendCore(const int idx, SSignal &sig)
-   {
-      int coreDir = CoreTrendDirection(idx);
-      int regimeDir = TrendDirection(idx);
-      if(coreDir == 0 || coreDir != regimeDir || ADX(idx, 1) < TrendADXMin)
-         return false;
-
-      string symbol = States[idx].symbol;
-      double atr = ATR(idx, 1);
-      if(atr <= 0)
-         return false;
-
-      if(coreDir == 1 && BullishBar(symbol, EntryTF, 1) && iClose(symbol, EntryTF, 1) > EMAPullback(idx, 1))
-         return PrepareSignal(idx, MOD_MTF_TREND_CORE, 1, "mtf_trend_core_long", sig);
-      if(coreDir == -1 && BearishBar(symbol, EntryTF, 1) && iClose(symbol, EntryTF, 1) < EMAPullback(idx, 1))
-         return PrepareSignal(idx, MOD_MTF_TREND_CORE, -1, "mtf_trend_core_short", sig);
-      return false;
-   }
-
-   bool AVWAPLiquidity(const int idx, SSignal &sig)
-   {
-      string symbol = States[idx].symbol;
-      double vwap, sd, upper, lower;
-      if(!CalculateAVWAP(symbol, vwap, sd, upper, lower))
-         return false;
-
-      double close = iClose(symbol, EntryTF, 1);
-      double level, extreme;
-      double atr = ATR(idx, 1);
-      if(atr <= 0)
-         return false;
-
-      if(close < lower && LiquiditySweepReclaim(symbol, 1, level, extreme) && CVDConfirms(symbol, 1))
-         return PrepareSignal(idx, MOD_AVWAP_LIQUIDITY, 1, "avwap_discount_liquidity_reclaim", sig);
-      if(close > upper && LiquiditySweepReclaim(symbol, -1, level, extreme) && CVDConfirms(symbol, -1))
-         return PrepareSignal(idx, MOD_AVWAP_LIQUIDITY, -1, "avwap_premium_liquidity_reclaim", sig);
-      return false;
-   }
-
-   bool VolatilityExpansion(const int idx, SSignal &sig)
-   {
-      string symbol = States[idx].symbol;
-      double atrNow = ATR(idx, 1);
-      double atrRegime = BufferValue(States[idx].hATRRegime, 0, 1);
-      if(atrNow <= 0 || atrRegime <= 0)
-         return false;
-      double ratio = atrNow / atrRegime;
-      if(ratio < VolExpansionRatio)
-         return false;
-
-      double close = iClose(symbol, EntryTF, 1);
-      double hi = HighestHigh(symbol, EntryTF, 2, BreakoutLookback / 2);
-      double lo = LowestLow(symbol, EntryTF, 2, BreakoutLookback / 2);
-      if(close > hi && BullishBar(symbol, EntryTF, 1))
-         return PrepareSignal(idx, MOD_VOLATILITY_EXPANSION, 1, "volatility_expansion_breakout", sig);
-      if(close < lo && BearishBar(symbol, EntryTF, 1))
-         return PrepareSignal(idx, MOD_VOLATILITY_EXPANSION, -1, "volatility_expansion_breakout", sig);
-      return false;
-   }
-
+   bool TrendPullback(int idx,SSignal &sig){int dir=TrendDirection(idx); if(dir==0||ADXv(idx,1)<TrendADXMin) return false; string s=States[idx].symbol; double ema=EMAPullbackv(idx,1),atr=ATRv(idx,1); if(ema<=0||atr<=0) return false; if(dir==1){bool pull=iLow(s,EntryTF,1)<=ema||iLow(s,EntryTF,2)<=ema; bool rec=iClose(s,EntryTF,1)>ema&&BullishBar(s,EntryTF,1); bool imp=BodySize(s,EntryTF,1)>=atr*MinBodyATR; if(pull&&rec&&imp) return Prepare(idx,MOD_TREND_PULLBACK,1,"trend_pullback_reclaim",sig);} if(dir==-1){bool pull=iHigh(s,EntryTF,1)>=ema||iHigh(s,EntryTF,2)>=ema; bool rec=iClose(s,EntryTF,1)<ema&&BearishBar(s,EntryTF,1); bool imp=BodySize(s,EntryTF,1)>=atr*MinBodyATR; if(pull&&rec&&imp) return Prepare(idx,MOD_TREND_PULLBACK,-1,"trend_pullback_reclaim",sig);} return false;}
+   bool MomentumBreakout(int idx,SSignal &sig){if(ADXv(idx,1)<TrendADXMin) return false; string s=States[idx].symbol; double atr=ATRv(idx,1); if(atr<=0) return false; double c=iClose(s,EntryTF,1),hi=HighestHigh(s,EntryTF,2,BreakoutLookback),lo=LowestLow(s,EntryTF,2,BreakoutLookback),body=BodySize(s,EntryTF,1); if(c>hi&&BullishBar(s,EntryTF,1)&&body>=atr*MomentumBodyATR) return Prepare(idx,MOD_MOMENTUM_BREAKOUT,1,"donchian_momentum_breakout",sig); if(c<lo&&BearishBar(s,EntryTF,1)&&body>=atr*MomentumBodyATR) return Prepare(idx,MOD_MOMENTUM_BREAKOUT,-1,"donchian_momentum_breakout",sig); return false;}
+   bool LateCycle(int idx,SSignal &sig){int dir=TrendDirection(idx); double adx=ADXv(idx,1),atr=ATRv(idx,1),fast=EMAFastv(idx,1); string s=States[idx].symbol; if(dir==0||adx<StrongTrendADX||atr<=0||fast<=0) return false; double c=iClose(s,EntryTF,1); if(MathAbs(c-fast)/atr<1.60) return false; if(dir==1&&BullishBar(s,EntryTF,1)&&BodySize(s,EntryTF,1)>=atr*MomentumBodyATR) return Prepare(idx,MOD_LATE_CYCLE_FAST_MOVE,1,"late_cycle_fast_long",sig); if(dir==-1&&BearishBar(s,EntryTF,1)&&BodySize(s,EntryTF,1)>=atr*MomentumBodyATR) return Prepare(idx,MOD_LATE_CYCLE_FAST_MOVE,-1,"late_cycle_fast_short",sig); return false;}
+   bool Downside(int idx,SSignal &sig){int dir=TrendDirection(idx); string s=States[idx].symbol; double atr=ATRv(idx,1); if(dir!=-1||ADXv(idx,1)<TrendADXMin||atr<=0) return false; double c=iClose(s,EntryTF,1),lo=LowestLow(s,EntryTF,2,BreakoutLookback/2); if(c<lo&&BearishBar(s,EntryTF,1)&&BodySize(s,EntryTF,1)>=atr*MinBodyATR) return Prepare(idx,MOD_DOWNSIDE_RISK_OFF,-1,"downside_trend_participation",sig); return false;}
+   bool Correction(int idx,SSignal &sig){string s=States[idx].symbol; double atr=ATRv(idx,1),fast=EMAFastv(idx,1); if(atr<=0||fast<=0||ADXv(idx,1)>RangeADXMax+5.0) return false; double c=iClose(s,EntryTF,1); if((fast-c)/atr>=RangeDeviationATR&&BullishBar(s,EntryTF,1)) return Prepare(idx,MOD_CORRECTION_REBOUND,1,"correction_rebound_discount",sig); return false;}
+   bool MTFCore(int idx,SSignal &sig){int core=CoreTrendDirection(idx),reg=TrendDirection(idx); if(core==0||core!=reg||ADXv(idx,1)<TrendADXMin) return false; string s=States[idx].symbol; if(core==1&&BullishBar(s,EntryTF,1)&&iClose(s,EntryTF,1)>EMAPullbackv(idx,1)) return Prepare(idx,MOD_MTF_TREND_CORE,1,"mtf_trend_core_long",sig); if(core==-1&&BearishBar(s,EntryTF,1)&&iClose(s,EntryTF,1)<EMAPullbackv(idx,1)) return Prepare(idx,MOD_MTF_TREND_CORE,-1,"mtf_trend_core_short",sig); return false;}
+   bool AVWAP(int idx,SSignal &sig){string s=States[idx].symbol; double v,u,l; if(!CalculateAVWAP(s,v,u,l)) return false; double c=iClose(s,EntryTF,1); if(c<l&&LiquiditySweepReclaim(s,1)&&CVDConfirms(s,1)) return Prepare(idx,MOD_AVWAP_LIQUIDITY,1,"avwap_discount_liquidity_reclaim",sig); if(c>u&&LiquiditySweepReclaim(s,-1)&&CVDConfirms(s,-1)) return Prepare(idx,MOD_AVWAP_LIQUIDITY,-1,"avwap_premium_liquidity_reclaim",sig); return false;}
+   bool VolExpansion(int idx,SSignal &sig){string s=States[idx].symbol; double a=ATRv(idx,1),ar=BufferValue(States[idx].hATRRegime,0,1); if(a<=0||ar<=0||a/ar<VolExpansionRatio) return false; double c=iClose(s,EntryTF,1),hi=HighestHigh(s,EntryTF,2,BreakoutLookback/2),lo=LowestLow(s,EntryTF,2,BreakoutLookback/2); if(c>hi&&BullishBar(s,EntryTF,1)) return Prepare(idx,MOD_VOLATILITY_EXPANSION,1,"volatility_expansion_breakout",sig); if(c<lo&&BearishBar(s,EntryTF,1)) return Prepare(idx,MOD_VOLATILITY_EXPANSION,-1,"volatility_expansion_breakout",sig); return false;}
 public:
-   bool Build(const int idx, const int moduleId, SSignal &sig)
-   {
-      sig.valid = false;
-      if(!ModuleEnabled(moduleId))
-         return false;
-      switch(moduleId)
-      {
-         case MOD_TREND_PULLBACK: return TrendPullback(idx, sig);
-         case MOD_MOMENTUM_BREAKOUT: return MomentumBreakout(idx, sig);
-         case MOD_LATE_CYCLE_FAST_MOVE: return LateCycleFastMove(idx, sig);
-         case MOD_DOWNSIDE_RISK_OFF: return DownsideRiskOff(idx, sig);
-         case MOD_CORRECTION_REBOUND: return CorrectionRebound(idx, sig);
-         case MOD_MTF_TREND_CORE: return MTFTrendCore(idx, sig);
-         case MOD_AVWAP_LIQUIDITY: return AVWAPLiquidity(idx, sig);
-         case MOD_VOLATILITY_EXPANSION: return VolatilityExpansion(idx, sig);
-      }
-      return false;
-   }
+   bool Build(int idx,int moduleId,SSignal &sig){sig.valid=false; if(!ModuleEnabled(moduleId)) return false; switch(moduleId){case MOD_TREND_PULLBACK:return TrendPullback(idx,sig); case MOD_MOMENTUM_BREAKOUT:return MomentumBreakout(idx,sig); case MOD_LATE_CYCLE_FAST_MOVE:return LateCycle(idx,sig); case MOD_DOWNSIDE_RISK_OFF:return Downside(idx,sig); case MOD_CORRECTION_REBOUND:return Correction(idx,sig); case MOD_MTF_TREND_CORE:return MTFCore(idx,sig); case MOD_AVWAP_LIQUIDITY:return AVWAP(idx,sig); case MOD_VOLATILITY_EXPANSION:return VolExpansion(idx,sig);} return false;}
 };
-
 CSignalEngine SIGNALS;
 
-//====================================================================
-// PORTFOLIO RISK MANAGER
-//====================================================================
-class CPortfolioRiskManager
+class CRiskManager
 {
 public:
-   void Init()
-   {
-      g_day = CurrentDayKey();
-      g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
-      g_equityPeak = MathMax(g_equityPeak, g_dayStartEquity);
-      ArrayResize(g_dailySymbolTrades, ArraySize(States));
-      ArrayResize(g_dailyModuleTrades, MODULE_COUNT);
-      ArrayInitialize(g_dailySymbolTrades, 0);
-      ArrayInitialize(g_dailyModuleTrades, 0);
-   }
-
-   void ResetIfNewDay()
-   {
-      datetime d = CurrentDayKey();
-      if(d != g_day)
-      {
-         g_day = d;
-         g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
-         ArrayInitialize(g_dailySymbolTrades, 0);
-         ArrayInitialize(g_dailyModuleTrades, 0);
-      }
-      g_equityPeak = MathMax(g_equityPeak, AccountInfoDouble(ACCOUNT_EQUITY));
-   }
-
-   double DrawdownFromPeakPercent()
-   {
-      if(g_equityPeak <= 0)
-         return 0.0;
-      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-      return MathMax(0.0, (g_equityPeak - equity) / g_equityPeak * 100.0);
-   }
-
-   double DailyLossPercent()
-   {
-      if(g_dayStartEquity <= 0)
-         return 0.0;
-      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-      return MathMax(0.0, (g_dayStartEquity - equity) / g_dayStartEquity * 100.0);
-   }
-
-   double RiskGovernorMultiplier()
-   {
-      double dd = DrawdownFromPeakPercent();
-      if(dd >= RiskCutDD2Percent)
-         return RiskCutDD2Multiplier;
-      if(dd >= RiskCutDD1Percent)
-         return RiskCutDD1Multiplier;
-      return 1.0;
-   }
-
-   int CountPortfolioPositions()
-   {
-      int c = 0;
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-      {
-         ulong ticket = PositionGetTicket(i);
-         if(ticket == 0 || !PositionSelectByTicket(ticket))
-            continue;
-         if(IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
-            c++;
-      }
-      return c;
-   }
-
-   int CountSymbolPositions(const string symbol)
-   {
-      int c = 0;
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-      {
-         ulong ticket = PositionGetTicket(i);
-         if(ticket == 0 || !PositionSelectByTicket(ticket))
-            continue;
-         if(PositionGetString(POSITION_SYMBOL) == symbol && IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
-            c++;
-      }
-      return c;
-   }
-
-   int CountModulePositions(const int moduleId)
-   {
-      int c = 0;
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-      {
-         ulong ticket = PositionGetTicket(i);
-         if(ticket == 0 || !PositionSelectByTicket(ticket))
-            continue;
-         if(ModuleFromMagic(PositionGetInteger(POSITION_MAGIC)) == moduleId)
-            c++;
-      }
-      return c;
-   }
-
-   int CountBucketPositions(const string bucket)
-   {
-      int c = 0;
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-      {
-         ulong ticket = PositionGetTicket(i);
-         if(ticket == 0 || !PositionSelectByTicket(ticket))
-            continue;
-         if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
-            continue;
-         SAssetProfile p = PROFILE.Profile(PositionGetString(POSITION_SYMBOL));
-         if(p.bucket == bucket)
-            c++;
-      }
-      return c;
-   }
-
-   bool CanOpen(const int symbolIndex, const SSignal &sig, string &reason)
-   {
-      ResetIfNewDay();
-      if(DailyLossPercent() >= MaxDailyLossPercent)
-      { reason = "daily_loss_limit"; return false; }
-      if(DrawdownFromPeakPercent() >= EquityKillDDPercent)
-      { reason = "equity_kill_switch"; return false; }
-      if(CountPortfolioPositions() >= MaxPortfolioPositions)
-      { reason = "max_portfolio_positions"; return false; }
-      if(CountSymbolPositions(sig.symbol) >= MaxPositionsPerSymbol)
-      { reason = "max_symbol_positions"; return false; }
-      if(CountBucketPositions(sig.bucket) >= MaxPositionsPerBucket)
-      { reason = "max_bucket_positions"; return false; }
-      if(CountModulePositions(sig.moduleId) >= MaxPositionsPerSystem)
-      { reason = "max_system_positions"; return false; }
-      if(g_dailySymbolTrades[symbolIndex] >= MaxTradesPerSymbolPerDay)
-      { reason = "max_symbol_trades_day"; return false; }
-      if(g_dailyModuleTrades[sig.moduleId] >= MaxTradesPerSystemPerDay)
-      { reason = "max_system_trades_day"; return false; }
-      reason = "ok";
-      return true;
-   }
-
-   void RegisterTrade(const int symbolIndex, const int moduleId)
-   {
-      if(symbolIndex >= 0 && symbolIndex < ArraySize(g_dailySymbolTrades))
-         g_dailySymbolTrades[symbolIndex]++;
-      if(moduleId >= 0 && moduleId < MODULE_COUNT)
-         g_dailyModuleTrades[moduleId]++;
-   }
-
-   double CalculateLots(const SSignal &sig)
-   {
-      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-      double riskPct = BaseRiskPercent * sig.riskMultiplier * RiskGovernorMultiplier();
-      double riskMoney = equity * riskPct / 100.0;
-      double tickValue = SymbolInfoDouble(sig.symbol, SYMBOL_TRADE_TICK_VALUE);
-      double tickSize = SymbolInfoDouble(sig.symbol, SYMBOL_TRADE_TICK_SIZE);
-      if(equity <= 0 || riskMoney <= 0 || tickValue <= 0 || tickSize <= 0 || sig.riskDistance <= 0)
-         return 0.0;
-      double lossPerLot = sig.riskDistance / tickSize * tickValue;
-      if(lossPerLot <= 0)
-         return 0.0;
-      double lots = riskMoney / lossPerLot;
-      double minLot = SymbolInfoDouble(sig.symbol, SYMBOL_VOLUME_MIN);
-      double maxLot = SymbolInfoDouble(sig.symbol, SYMBOL_VOLUME_MAX);
-      double step = SymbolInfoDouble(sig.symbol, SYMBOL_VOLUME_STEP);
-      if(step <= 0)
-         return 0.0;
-      lots = MathMax(minLot, MathMin(maxLot, lots));
-      lots = MathFloor(lots / step) * step;
-      return NormalizeDouble(lots, 2);
-   }
+   void Init(){g_day=CurrentDayKey(); g_dayStartEquity=AccountInfoDouble(ACCOUNT_EQUITY); g_equityPeak=MathMax(g_equityPeak,g_dayStartEquity); ArrayResize(g_dailySymbolTrades,ArraySize(States)); ArrayResize(g_dailyModuleTrades,MODULE_COUNT); ArrayInitialize(g_dailySymbolTrades,0); ArrayInitialize(g_dailyModuleTrades,0);}
+   void ResetIfNewDay(){datetime d=CurrentDayKey(); if(d!=g_day){g_day=d; g_dayStartEquity=AccountInfoDouble(ACCOUNT_EQUITY); ArrayInitialize(g_dailySymbolTrades,0); ArrayInitialize(g_dailyModuleTrades,0);} g_equityPeak=MathMax(g_equityPeak,AccountInfoDouble(ACCOUNT_EQUITY));}
+   double PeakDD(){if(g_equityPeak<=0) return 0; double eq=AccountInfoDouble(ACCOUNT_EQUITY); return MathMax(0.0,(g_equityPeak-eq)/g_equityPeak*100.0);} double DailyLoss(){if(g_dayStartEquity<=0) return 0; double eq=AccountInfoDouble(ACCOUNT_EQUITY); return MathMax(0.0,(g_dayStartEquity-eq)/g_dayStartEquity*100.0);} double RiskGov(){double dd=PeakDD(); if(dd>=RiskCutDD2Percent) return RiskCutDD2Multiplier; if(dd>=RiskCutDD1Percent) return RiskCutDD1Multiplier; return 1.0;}
+   int CountPortfolio(){int c=0; for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i); if(t==0||!PositionSelectByTicket(t)) continue; if(IsOurMagic(PositionGetInteger(POSITION_MAGIC))) c++;} return c;} int CountSymbol(string s){int c=0; for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i); if(t==0||!PositionSelectByTicket(t)) continue; if(PositionGetString(POSITION_SYMBOL)==s&&IsOurMagic(PositionGetInteger(POSITION_MAGIC))) c++;} return c;} int CountModule(int m){int c=0; for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i); if(t==0||!PositionSelectByTicket(t)) continue; if(ModuleFromMagic(PositionGetInteger(POSITION_MAGIC))==m) c++;} return c;} int CountBucket(string bucket){int c=0; for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i); if(t==0||!PositionSelectByTicket(t)) continue; if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC))) continue; if(PROFILE.Profile(PositionGetString(POSITION_SYMBOL)).bucket==bucket) c++;} return c;}
+   bool CanOpen(int symbolIndex,SSignal &sig,string &reason){ResetIfNewDay(); if(DailyLoss()>=MaxDailyLossPercent){reason="daily_loss_limit"; return false;} if(PeakDD()>=EquityStopDDPercent){reason="equity_stop_dd"; return false;} if(CountPortfolio()>=MaxPortfolioPositions){reason="max_portfolio_positions"; return false;} if(CountSymbol(sig.symbol)>=MaxPositionsPerSymbol){reason="max_symbol_positions"; return false;} if(CountBucket(sig.bucket)>=MaxPositionsPerBucket){reason="max_bucket_positions"; return false;} if(CountModule(sig.moduleId)>=MaxPositionsPerSystem){reason="max_system_positions"; return false;} if(g_dailySymbolTrades[symbolIndex]>=MaxTradesPerSymbolPerDay){reason="max_symbol_trades_day"; return false;} if(g_dailyModuleTrades[sig.moduleId]>=MaxTradesPerSystemPerDay){reason="max_system_trades_day"; return false;} reason="ok"; return true;}
+   void RegisterTrade(int symbolIndex,int moduleId){if(symbolIndex>=0&&symbolIndex<ArraySize(g_dailySymbolTrades)) g_dailySymbolTrades[symbolIndex]++; if(moduleId>=0&&moduleId<MODULE_COUNT) g_dailyModuleTrades[moduleId]++;}
+   double Lots(SSignal &sig){double eq=AccountInfoDouble(ACCOUNT_EQUITY),riskPct=BaseRiskPercent*sig.riskMultiplier*RiskGov(),riskMoney=eq*riskPct/100.0,tv=SymbolInfoDouble(sig.symbol,SYMBOL_TRADE_TICK_VALUE),ts=SymbolInfoDouble(sig.symbol,SYMBOL_TRADE_TICK_SIZE); if(eq<=0||riskMoney<=0||tv<=0||ts<=0||sig.riskDistance<=0) return 0; double lossPerLot=sig.riskDistance/ts*tv; if(lossPerLot<=0) return 0; double lots=riskMoney/lossPerLot,minLot=SymbolInfoDouble(sig.symbol,SYMBOL_VOLUME_MIN),maxLot=SymbolInfoDouble(sig.symbol,SYMBOL_VOLUME_MAX),step=SymbolInfoDouble(sig.symbol,SYMBOL_VOLUME_STEP); if(step<=0) return 0; lots=MathMax(minLot,MathMin(maxLot,lots)); lots=MathFloor(lots/step)*step; return NormalizeDouble(lots,2);}
 };
+CRiskManager RISK;
 
-CPortfolioRiskManager RISK;
-
-//====================================================================
-// EXECUTION / MANAGEMENT
-//====================================================================
 class CExecutionEngine
 {
 private:
-   bool CanExecuteNow()
-   {
-      bool tester = (bool)MQLInfoInteger(MQL_TESTER);
-      return (tester && ExecuteInTester) || AllowLiveTrading;
-   }
-
-   bool RetcodeOK(const uint retcode)
-   {
-      return retcode == TRADE_RETCODE_DONE || retcode == TRADE_RETCODE_PLACED || retcode == TRADE_RETCODE_DONE_PARTIAL;
-   }
-
-   ENUM_ORDER_TYPE_FILLING FillingMode(const string symbol)
-   {
-      long mode = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
-      if((mode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
-         return ORDER_FILLING_FOK;
-      if((mode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
-         return ORDER_FILLING_IOC;
-      return ORDER_FILLING_RETURN;
-   }
-
+   bool CanExecuteNow(){bool tester=(bool)MQLInfoInteger(MQL_TESTER); return (tester&&ExecuteInTester)||AllowLiveTrading;} bool RetcodeOK(uint r){return r==TRADE_RETCODE_DONE||r==TRADE_RETCODE_PLACED||r==TRADE_RETCODE_DONE_PARTIAL;}
+   ENUM_ORDER_TYPE_FILLING FillingMode(string s){long m=SymbolInfoInteger(s,SYMBOL_FILLING_MODE); if((m&SYMBOL_FILLING_FOK)==SYMBOL_FILLING_FOK) return ORDER_FILLING_FOK; if((m&SYMBOL_FILLING_IOC)==SYMBOL_FILLING_IOC) return ORDER_FILLING_IOC; return ORDER_FILLING_RETURN;}
+   bool ModifyAllowed(string s,int type,double oldSL,double newSL){double point=PointFor(s),bid=SymbolInfoDouble(s,SYMBOL_BID),ask=SymbolInfoDouble(s,SYMBOL_ASK); int stops=(int)SymbolInfoInteger(s,SYMBOL_TRADE_STOPS_LEVEL),freeze=(int)SymbolInfoInteger(s,SYMBOL_TRADE_FREEZE_LEVEL); double minDist=(double)MathMax(stops,freeze)*point+2.0*point,minStep=MathMax((double)MinSLModifyStepPoints*point,2.0*point); double n=NormalizePrice(s,newSL),o=NormalizePrice(s,oldSL); if(MathAbs(n-o)<minStep) return false; if(type==POSITION_TYPE_BUY){if(n<=o) return false; if(n>=bid-minDist) return false;} if(type==POSITION_TYPE_SELL){if(n>=o) return false; if(n<=ask+minDist) return false;} return true;}
 public:
-   bool SendMarket(const int symbolIndex, const SSignal &sig)
+   bool SendMarket(int symbolIndex,SSignal &sig)
    {
-      int spread = (int)SymbolInfoInteger(sig.symbol, SYMBOL_SPREAD);
-      string sideName = sig.side == 1 ? "long" : "short";
-      LOG.Write("SIGNAL", sig.symbol, sig.moduleName, sig.bucket, sideName, sig.entry, sig.sl, sig.tp, sig.rr, sig.atr, spread, 0, sig.reason);
-
-      if(!CanExecuteNow())
-      {
-         LOG.Write("BLOCKED", sig.symbol, sig.moduleName, sig.bucket, sideName, sig.entry, sig.sl, sig.tp, sig.rr, sig.atr, spread, 0, "trading_disabled");
-         return false;
-      }
-
-      string riskReason;
-      if(!RISK.CanOpen(symbolIndex, sig, riskReason))
-      {
-         LOG.Write("SKIP", sig.symbol, sig.moduleName, sig.bucket, sideName, sig.entry, sig.sl, sig.tp, sig.rr, sig.atr, spread, 0, riskReason);
-         return false;
-      }
-
-      double lots = RISK.CalculateLots(sig);
-      if(lots <= 0.0)
-      {
-         LOG.Write("SKIP", sig.symbol, sig.moduleName, sig.bucket, sideName, sig.entry, sig.sl, sig.tp, sig.rr, sig.atr, spread, 0, "invalid_lots");
-         return false;
-      }
-
-      SAssetProfile profile = PROFILE.Profile(sig.symbol);
-      MqlTradeRequest req;
-      MqlTradeResult res;
-      ZeroMemory(req);
-      ZeroMemory(res);
-      req.action = TRADE_ACTION_DEAL;
-      req.symbol = sig.symbol;
-      req.magic = MagicFor(sig.moduleId, sig.symbol);
-      req.volume = lots;
-      req.type = sig.side == 1 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-      req.price = NormalizePrice(sig.symbol, sig.side == 1 ? SymbolInfoDouble(sig.symbol, SYMBOL_ASK) : SymbolInfoDouble(sig.symbol, SYMBOL_BID));
-      req.sl = NormalizePrice(sig.symbol, sig.sl);
-      req.tp = NormalizePrice(sig.symbol, sig.tp);
-      req.deviation = profile.deviationPoints;
-      req.type_filling = FillingMode(sig.symbol);
-      req.type_time = ORDER_TIME_GTC;
-      req.comment = sig.moduleName;
-
-      bool ok = OrderSend(req, res);
-      if(!ok || !RetcodeOK(res.retcode))
-      {
-         LOG.Write("ORDER_ERROR", sig.symbol, sig.moduleName, sig.bucket, sideName, req.price, req.sl, req.tp, sig.rr, sig.atr, spread, res.retcode, res.comment);
-         return false;
-      }
-
-      RISK.RegisterTrade(symbolIndex, sig.moduleId);
-      LOG.Write("MARKET_FILLED", sig.symbol, sig.moduleName, sig.bucket, sideName, req.price, req.sl, req.tp, sig.rr, sig.atr, spread, res.retcode, sig.reason);
-      return true;
+      int spread=(int)SymbolInfoInteger(sig.symbol,SYMBOL_SPREAD); string sideName=sig.side==1?"long":"short"; LOG.Write("SIGNAL",sig.symbol,sig.moduleName,sig.bucket,sideName,sig.entry,sig.sl,sig.tp,sig.rr,sig.atr,spread,0,sig.reason); if(!CanExecuteNow()){LOG.Write("BLOCKED",sig.symbol,sig.moduleName,sig.bucket,sideName,sig.entry,sig.sl,sig.tp,sig.rr,sig.atr,spread,0,"trading_disabled"); return false;} string reason; if(!RISK.CanOpen(symbolIndex,sig,reason)){LOG.Write("SKIP",sig.symbol,sig.moduleName,sig.bucket,sideName,sig.entry,sig.sl,sig.tp,sig.rr,sig.atr,spread,0,reason); return false;} double lots=RISK.Lots(sig); if(lots<=0){LOG.Write("SKIP",sig.symbol,sig.moduleName,sig.bucket,sideName,sig.entry,sig.sl,sig.tp,sig.rr,sig.atr,spread,0,"invalid_lots"); return false;} SAssetProfile p=PROFILE.Profile(sig.symbol); MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res); req.action=TRADE_ACTION_DEAL; req.symbol=sig.symbol; req.magic=MagicFor(sig.moduleId,sig.symbol); req.volume=lots; req.type=sig.side==1?ORDER_TYPE_BUY:ORDER_TYPE_SELL; req.price=NormalizePrice(sig.symbol,sig.side==1?SymbolInfoDouble(sig.symbol,SYMBOL_ASK):SymbolInfoDouble(sig.symbol,SYMBOL_BID)); req.sl=NormalizePrice(sig.symbol,sig.sl); req.tp=NormalizePrice(sig.symbol,sig.tp); req.deviation=p.deviationPoints; req.type_filling=FillingMode(sig.symbol); req.type_time=ORDER_TIME_GTC; req.comment=sig.moduleName; bool ok=OrderSend(req,res); if(!ok||!RetcodeOK(res.retcode)){LOG.Write("ORDER_ERROR",sig.symbol,sig.moduleName,sig.bucket,sideName,req.price,req.sl,req.tp,sig.rr,sig.atr,spread,res.retcode,res.comment); return false;} RISK.RegisterTrade(symbolIndex,sig.moduleId); LOG.Write("MARKET_FILLED",sig.symbol,sig.moduleName,sig.bucket,sideName,req.price,req.sl,req.tp,sig.rr,sig.atr,spread,res.retcode,sig.reason); return true;
    }
-
-   void ManageOpenPositions()
-   {
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-      {
-         ulong ticket = PositionGetTicket(i);
-         if(ticket == 0 || !PositionSelectByTicket(ticket))
-            continue;
-         long magic = PositionGetInteger(POSITION_MAGIC);
-         if(!IsOurMagic(magic))
-            continue;
-
-         string symbol = PositionGetString(POSITION_SYMBOL);
-         int moduleId = ModuleFromMagic(magic);
-         int maxHold = ModuleMaxHoldBars(moduleId);
-         datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
-         int barsHeld = iBarShift(symbol, EntryTF, openTime, false);
-         if(barsHeld >= maxHold)
-         {
-            ClosePosition(ticket, symbol, moduleId, "max_hold_bars");
-            continue;
-         }
-
-         if(MoveToBreakeven)
-            TryMoveBreakeven(ticket, symbol, moduleId);
-         if(UseATRTrailing)
-            TryTrailing(ticket, symbol, moduleId);
-      }
-   }
-
-   bool ClosePosition(const ulong ticket, const string symbol, const int moduleId, const string reason)
-   {
-      if(!PositionSelectByTicket(ticket))
-         return false;
-      int type = (int)PositionGetInteger(POSITION_TYPE);
-      double volume = PositionGetDouble(POSITION_VOLUME);
-      double price = type == POSITION_TYPE_BUY ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
-      SAssetProfile profile = PROFILE.Profile(symbol);
-
-      MqlTradeRequest req;
-      MqlTradeResult res;
-      ZeroMemory(req);
-      ZeroMemory(res);
-      req.action = TRADE_ACTION_DEAL;
-      req.position = ticket;
-      req.symbol = symbol;
-      req.volume = volume;
-      req.type = type == POSITION_TYPE_BUY ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-      req.price = NormalizePrice(symbol, price);
-      req.deviation = profile.deviationPoints;
-      req.type_filling = FillingMode(symbol);
-      req.magic = MagicFor(moduleId, symbol);
-      req.comment = reason;
-
-      bool ok = OrderSend(req, res);
-      LOG.Write(ok && RetcodeOK(res.retcode) ? "CLOSE_SENT" : "CLOSE_ERROR", symbol, ModuleName(moduleId), profile.bucket, "", req.price, 0, 0, 0, 0, (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD), res.retcode, res.comment);
-      return ok && RetcodeOK(res.retcode);
-   }
-
-   double LocalATR(const string symbol)
-   {
-      MqlRates rates[];
-      ArraySetAsSeries(rates, true);
-      if(CopyRates(symbol, EntryTF, 0, ATRPeriod + 5, rates) < ATRPeriod + 2)
-         return 0.0;
-      double sum = 0.0;
-      for(int i = 1; i <= ATRPeriod; i++)
-      {
-         double tr = MathMax(rates[i].high - rates[i].low,
-                             MathMax(MathAbs(rates[i].high - rates[i+1].close), MathAbs(rates[i].low - rates[i+1].close)));
-         sum += tr;
-      }
-      return sum / (double)ATRPeriod;
-   }
-
-   void ModifySLTP(const ulong ticket, const string symbol, const int moduleId, const double newSL, const double tp, const string label)
-   {
-      MqlTradeRequest req;
-      MqlTradeResult res;
-      ZeroMemory(req);
-      ZeroMemory(res);
-      req.action = TRADE_ACTION_SLTP;
-      req.position = ticket;
-      req.symbol = symbol;
-      req.sl = NormalizePrice(symbol, newSL);
-      req.tp = tp;
-      req.magic = MagicFor(moduleId, symbol);
-      bool ok = OrderSend(req, res);
-      if(!ok || !RetcodeOK(res.retcode))
-      {
-         SAssetProfile p = PROFILE.Profile(symbol);
-         LOG.Write("SLTP_ERROR", symbol, ModuleName(moduleId), p.bucket, "", 0, req.sl, req.tp, 0, 0, (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD), res.retcode, res.comment + " " + label);
-      }
-   }
-
-   void TryMoveBreakeven(const ulong ticket, const string symbol, const int moduleId)
-   {
-      if(!PositionSelectByTicket(ticket))
-         return;
-      int type = (int)PositionGetInteger(POSITION_TYPE);
-      double open = PositionGetDouble(POSITION_PRICE_OPEN);
-      double sl = PositionGetDouble(POSITION_SL);
-      double tp = PositionGetDouble(POSITION_TP);
-      if(sl <= 0)
-         return;
-      double risk = MathAbs(open - sl);
-      if(risk <= 0)
-         return;
-
-      double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-      double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      double point = PointFor(symbol);
-      double newSL = sl;
-
-      if(type == POSITION_TYPE_BUY)
-      {
-         double rNow = (bid - open) / risk;
-         if(rNow >= BreakevenAtR && sl < open)
-            newSL = open + BreakevenPlusPoints * point;
-      }
-      else if(type == POSITION_TYPE_SELL)
-      {
-         double rNow = (open - ask) / risk;
-         if(rNow >= BreakevenAtR && sl > open)
-            newSL = open - BreakevenPlusPoints * point;
-      }
-
-      if(newSL != sl)
-         ModifySLTP(ticket, symbol, moduleId, newSL, tp, "breakeven");
-   }
-
-   void TryTrailing(const ulong ticket, const string symbol, const int moduleId)
-   {
-      if(!PositionSelectByTicket(ticket))
-         return;
-      double atr = LocalATR(symbol);
-      if(atr <= 0)
-         return;
-      int type = (int)PositionGetInteger(POSITION_TYPE);
-      double open = PositionGetDouble(POSITION_PRICE_OPEN);
-      double sl = PositionGetDouble(POSITION_SL);
-      double tp = PositionGetDouble(POSITION_TP);
-      if(sl <= 0)
-         return;
-      double risk = MathAbs(open - sl);
-      if(risk <= 0)
-         return;
-
-      double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-      double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      double trailMult = moduleId == MOD_LATE_CYCLE_FAST_MOVE ? 0.85 : TrailATRMult;
-      double trailStart = moduleId == MOD_LATE_CYCLE_FAST_MOVE ? 0.95 : TrailStartR;
-      double newSL = sl;
-
-      if(type == POSITION_TYPE_BUY)
-      {
-         double rNow = (bid - open) / risk;
-         double proposed = bid - atr * trailMult;
-         if(rNow >= trailStart && proposed > sl && proposed < bid)
-            newSL = proposed;
-      }
-      else if(type == POSITION_TYPE_SELL)
-      {
-         double rNow = (open - ask) / risk;
-         double proposed = ask + atr * trailMult;
-         if(rNow >= trailStart && proposed < sl && proposed > ask)
-            newSL = proposed;
-      }
-
-      if(newSL != sl)
-         ModifySLTP(ticket, symbol, moduleId, newSL, tp, "atr_trailing");
-   }
+   double LocalATR(string s){MqlRates r[]; ArraySetAsSeries(r,true); if(CopyRates(s,EntryTF,0,ATRPeriod+5,r)<ATRPeriod+2) return 0; double sum=0; for(int i=1;i<=ATRPeriod;i++){double tr=MathMax(r[i].high-r[i].low,MathMax(MathAbs(r[i].high-r[i+1].close),MathAbs(r[i].low-r[i+1].close))); sum+=tr;} return sum/(double)ATRPeriod;}
+   void ManageSymbolPositions(string s){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i); if(t==0||!PositionSelectByTicket(t)) continue; if(PositionGetString(POSITION_SYMBOL)!=s) continue; long magic=PositionGetInteger(POSITION_MAGIC); if(!IsOurMagic(magic)) continue; int moduleId=ModuleFromMagic(magic); datetime openTime=(datetime)PositionGetInteger(POSITION_TIME); int barsHeld=iBarShift(s,EntryTF,openTime,false); if(barsHeld>=ModuleMaxHoldBars(moduleId)){ClosePosition(t,s,moduleId,"max_hold_bars"); continue;} if(MoveToBreakeven) TryBreakeven(t,s,moduleId); if(UseATRTrailing) TryTrail(t,s,moduleId);}}
+   bool ClosePosition(ulong ticket,string s,int moduleId,string reason){if(!PositionSelectByTicket(ticket)) return false; int type=(int)PositionGetInteger(POSITION_TYPE); double vol=PositionGetDouble(POSITION_VOLUME),price=type==POSITION_TYPE_BUY?SymbolInfoDouble(s,SYMBOL_BID):SymbolInfoDouble(s,SYMBOL_ASK); SAssetProfile p=PROFILE.Profile(s); MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res); req.action=TRADE_ACTION_DEAL; req.position=ticket; req.symbol=s; req.volume=vol; req.type=type==POSITION_TYPE_BUY?ORDER_TYPE_SELL:ORDER_TYPE_BUY; req.price=NormalizePrice(s,price); req.deviation=p.deviationPoints; req.type_filling=FillingMode(s); req.magic=MagicFor(moduleId,s); req.comment=reason; bool ok=OrderSend(req,res); LOG.Write(ok&&RetcodeOK(res.retcode)?"CLOSE_SENT":"CLOSE_ERROR",s,ModuleName(moduleId),p.bucket,"",req.price,0,0,0,0,(int)SymbolInfoInteger(s,SYMBOL_SPREAD),res.retcode,res.comment); return ok&&RetcodeOK(res.retcode);}
+   void ModifySLTP(ulong ticket,string s,int moduleId,double newSL,double tp,string label){if(!PositionSelectByTicket(ticket)) return; int type=(int)PositionGetInteger(POSITION_TYPE); double oldSL=PositionGetDouble(POSITION_SL); if(oldSL<=0) return; if(!ModifyAllowed(s,type,oldSL,newSL)) return; MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res); req.action=TRADE_ACTION_SLTP; req.position=ticket; req.symbol=s; req.sl=NormalizePrice(s,newSL); req.tp=NormalizePrice(s,tp); req.magic=MagicFor(moduleId,s); bool ok=OrderSend(req,res); if(!ok||!RetcodeOK(res.retcode)){SAssetProfile p=PROFILE.Profile(s); LOG.Write("SLTP_ERROR",s,ModuleName(moduleId),p.bucket,"",0,req.sl,req.tp,0,0,(int)SymbolInfoInteger(s,SYMBOL_SPREAD),res.retcode,res.comment+" "+label);}}
+   void TryBreakeven(ulong ticket,string s,int moduleId){if(!PositionSelectByTicket(ticket)) return; int type=(int)PositionGetInteger(POSITION_TYPE); double open=PositionGetDouble(POSITION_PRICE_OPEN),sl=PositionGetDouble(POSITION_SL),tp=PositionGetDouble(POSITION_TP); if(sl<=0) return; double risk=MathAbs(open-sl); if(risk<=0) return; double bid=SymbolInfoDouble(s,SYMBOL_BID),ask=SymbolInfoDouble(s,SYMBOL_ASK),point=PointFor(s),newSL=sl; if(type==POSITION_TYPE_BUY){double rNow=(bid-open)/risk; if(rNow>=BreakevenAtR&&sl<open) newSL=open+BreakevenPlusPoints*point;} else if(type==POSITION_TYPE_SELL){double rNow=(open-ask)/risk; if(rNow>=BreakevenAtR&&sl>open) newSL=open-BreakevenPlusPoints*point;} if(newSL!=sl) ModifySLTP(ticket,s,moduleId,newSL,tp,"breakeven");}
+   void TryTrail(ulong ticket,string s,int moduleId){if(!PositionSelectByTicket(ticket)) return; double atr=LocalATR(s); if(atr<=0) return; int type=(int)PositionGetInteger(POSITION_TYPE); double open=PositionGetDouble(POSITION_PRICE_OPEN),sl=PositionGetDouble(POSITION_SL),tp=PositionGetDouble(POSITION_TP); if(sl<=0) return; double risk=MathAbs(open-sl); if(risk<=0) return; double bid=SymbolInfoDouble(s,SYMBOL_BID),ask=SymbolInfoDouble(s,SYMBOL_ASK),trailMult=moduleId==MOD_LATE_CYCLE_FAST_MOVE?1.00:TrailATRMult,trailStart=moduleId==MOD_LATE_CYCLE_FAST_MOVE?1.10:TrailStartR,newSL=sl; if(type==POSITION_TYPE_BUY){double rNow=(bid-open)/risk,prop=bid-atr*trailMult; if(rNow>=trailStart&&prop>sl&&prop<bid) newSL=prop;} else if(type==POSITION_TYPE_SELL){double rNow=(open-ask)/risk,prop=ask+atr*trailMult; if(rNow>=trailStart&&prop<sl&&prop>ask) newSL=prop;} if(newSL!=sl) ModifySLTP(ticket,s,moduleId,newSL,tp,"atr_trailing");}
 };
-
 CExecutionEngine EXECUTION;
 
-//====================================================================
-// LIFECYCLE
-//====================================================================
 int OnInit()
 {
-   string symbols[];
-   int n = ParseSymbols(InpSymbols, symbols);
-   if(n <= 0)
-   {
-      Print("No symbols configured.");
-      return INIT_FAILED;
-   }
-
-   ArrayResize(States, n);
-   for(int i = 0; i < n; i++)
-   {
-      States[i].symbol = symbols[i];
-      States[i].lastBarTime = 0;
-      SymbolSelect(States[i].symbol, true);
-      States[i].hATR = iATR(States[i].symbol, EntryTF, ATRPeriod);
-      States[i].hATRRegime = iATR(States[i].symbol, RegimeTF, ATRPeriod);
-      States[i].hADX = iADX(States[i].symbol, RegimeTF, ADXPeriod);
-      States[i].hFastEMA = iMA(States[i].symbol, RegimeTF, FastEMA, 0, MODE_EMA, PRICE_CLOSE);
-      States[i].hSlowEMA = iMA(States[i].symbol, RegimeTF, SlowEMA, 0, MODE_EMA, PRICE_CLOSE);
-      States[i].hPullbackEMA = iMA(States[i].symbol, EntryTF, PullbackEMA, 0, MODE_EMA, PRICE_CLOSE);
-      States[i].hCoreFastEMA = iMA(States[i].symbol, CoreTF, FastEMA, 0, MODE_EMA, PRICE_CLOSE);
-      States[i].hCoreSlowEMA = iMA(States[i].symbol, CoreTF, SlowEMA, 0, MODE_EMA, PRICE_CLOSE);
-
-      if(States[i].hATR == INVALID_HANDLE || States[i].hADX == INVALID_HANDLE || States[i].hFastEMA == INVALID_HANDLE ||
-         States[i].hSlowEMA == INVALID_HANDLE || States[i].hPullbackEMA == INVALID_HANDLE ||
-         States[i].hCoreFastEMA == INVALID_HANDLE || States[i].hCoreSlowEMA == INVALID_HANDLE)
-      {
-         Print("Failed indicator handle for ", States[i].symbol);
-         return INIT_FAILED;
-      }
-   }
-
-   LOG.Init(CsvLogFile);
-   RISK.Init();
-   LOG.Write("INIT", "PORTFOLIO", "CoreEA_PortfolioX", "", "", 0, 0, 0, 0, 0, 0, 0,
-             StringFormat("version=1.000 symbols=%d entryTF=%s regimeTF=%s coreTF=%s", n, EnumToString(EntryTF), EnumToString(RegimeTF), EnumToString(CoreTF)));
-   return INIT_SUCCEEDED;
+   string symbols[]; int n=ParseSymbols(InpSymbols,symbols); if(n<=0){Print("No symbols configured."); return INIT_FAILED;} ArrayResize(States,n);
+   for(int i=0;i<n;i++){States[i].symbol=symbols[i]; States[i].lastBarTime=0; SymbolSelect(States[i].symbol,true); States[i].hATR=iATR(States[i].symbol,EntryTF,ATRPeriod); States[i].hATRRegime=iATR(States[i].symbol,RegimeTF,ATRPeriod); States[i].hADX=iADX(States[i].symbol,RegimeTF,ADXPeriod); States[i].hFastEMA=iMA(States[i].symbol,RegimeTF,FastEMA,0,MODE_EMA,PRICE_CLOSE); States[i].hSlowEMA=iMA(States[i].symbol,RegimeTF,SlowEMA,0,MODE_EMA,PRICE_CLOSE); States[i].hPullbackEMA=iMA(States[i].symbol,EntryTF,PullbackEMA,0,MODE_EMA,PRICE_CLOSE); States[i].hCoreFastEMA=iMA(States[i].symbol,CoreTF,FastEMA,0,MODE_EMA,PRICE_CLOSE); States[i].hCoreSlowEMA=iMA(States[i].symbol,CoreTF,SlowEMA,0,MODE_EMA,PRICE_CLOSE); if(States[i].hATR==INVALID_HANDLE||States[i].hATRRegime==INVALID_HANDLE||States[i].hADX==INVALID_HANDLE||States[i].hFastEMA==INVALID_HANDLE||States[i].hSlowEMA==INVALID_HANDLE||States[i].hPullbackEMA==INVALID_HANDLE||States[i].hCoreFastEMA==INVALID_HANDLE||States[i].hCoreSlowEMA==INVALID_HANDLE){Print("Failed indicator handle for ",States[i].symbol); return INIT_FAILED;}}
+   LOG.Init(CsvLogFile); RISK.Init(); LOG.Write("INIT","PORTFOLIO","CoreEA_PortfolioX","","",0,0,0,0,0,0,0,StringFormat("version=1.100 symbols=%d entryTF=%s",n,EnumToString(EntryTF))); return INIT_SUCCEEDED;
 }
-
-void OnDeinit(const int reason)
-{
-   for(int i = 0; i < ArraySize(States); i++)
-   {
-      if(States[i].hATR != INVALID_HANDLE) IndicatorRelease(States[i].hATR);
-      if(States[i].hATRRegime != INVALID_HANDLE) IndicatorRelease(States[i].hATRRegime);
-      if(States[i].hADX != INVALID_HANDLE) IndicatorRelease(States[i].hADX);
-      if(States[i].hFastEMA != INVALID_HANDLE) IndicatorRelease(States[i].hFastEMA);
-      if(States[i].hSlowEMA != INVALID_HANDLE) IndicatorRelease(States[i].hSlowEMA);
-      if(States[i].hPullbackEMA != INVALID_HANDLE) IndicatorRelease(States[i].hPullbackEMA);
-      if(States[i].hCoreFastEMA != INVALID_HANDLE) IndicatorRelease(States[i].hCoreFastEMA);
-      if(States[i].hCoreSlowEMA != INVALID_HANDLE) IndicatorRelease(States[i].hCoreSlowEMA);
-   }
-   LOG.Write("DEINIT", "PORTFOLIO", "CoreEA_PortfolioX", "", "", 0, 0, 0, 0, 0, 0, 0, IntegerToString(reason));
-}
+void OnDeinit(const int reason){for(int i=0;i<ArraySize(States);i++){if(States[i].hATR!=INVALID_HANDLE) IndicatorRelease(States[i].hATR); if(States[i].hATRRegime!=INVALID_HANDLE) IndicatorRelease(States[i].hATRRegime); if(States[i].hADX!=INVALID_HANDLE) IndicatorRelease(States[i].hADX); if(States[i].hFastEMA!=INVALID_HANDLE) IndicatorRelease(States[i].hFastEMA); if(States[i].hSlowEMA!=INVALID_HANDLE) IndicatorRelease(States[i].hSlowEMA); if(States[i].hPullbackEMA!=INVALID_HANDLE) IndicatorRelease(States[i].hPullbackEMA); if(States[i].hCoreFastEMA!=INVALID_HANDLE) IndicatorRelease(States[i].hCoreFastEMA); if(States[i].hCoreSlowEMA!=INVALID_HANDLE) IndicatorRelease(States[i].hCoreSlowEMA);} LOG.Write("DEINIT","PORTFOLIO","CoreEA_PortfolioX","","",0,0,0,0,0,0,0,IntegerToString(reason));}
 
 void OnTick()
 {
    RISK.ResetIfNewDay();
-   EXECUTION.ManageOpenPositions();
-
-   for(int i = 0; i < ArraySize(States); i++)
+   for(int i=0;i<ArraySize(States);i++)
    {
-      string symbol = States[i].symbol;
-      datetime t = iTime(symbol, EntryTF, 0);
-      if(t <= 0 || t == States[i].lastBarTime)
-         continue;
-      States[i].lastBarTime = t;
+      string s=States[i].symbol; datetime t=iTime(s,EntryTF,0); if(t<=0||t==States[i].lastBarTime) continue;
+      States[i].lastBarTime=t;
+      EXECUTION.ManageSymbolPositions(s);
       ProcessSymbol(i);
    }
 }
 
-void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
+void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
-   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
-      return;
-   ulong deal = trans.deal;
-   if(deal == 0 || !HistoryDealSelect(deal))
-      return;
-   long magic = HistoryDealGetInteger(deal, DEAL_MAGIC);
-   if(!IsOurMagic(magic))
-      return;
-   long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
-   if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT)
-      return;
-   string symbol = HistoryDealGetString(deal, DEAL_SYMBOL);
-   int moduleId = ModuleFromMagic(magic);
-   SAssetProfile p = PROFILE.Profile(symbol);
-   double profit = HistoryDealGetDouble(deal, DEAL_PROFIT) + HistoryDealGetDouble(deal, DEAL_SWAP) + HistoryDealGetDouble(deal, DEAL_COMMISSION);
-   LOG.Write("DEAL_CLOSED", symbol, ModuleName(moduleId), p.bucket, "", HistoryDealGetDouble(deal, DEAL_PRICE), 0, 0, 0, 0, (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD), 0, DoubleToString(profit, 2));
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return; ulong deal=trans.deal; if(deal==0||!HistoryDealSelect(deal)) return; long magic=HistoryDealGetInteger(deal,DEAL_MAGIC); if(!IsOurMagic(magic)) return; long entry=HistoryDealGetInteger(deal,DEAL_ENTRY); if(entry!=DEAL_ENTRY_OUT&&entry!=DEAL_ENTRY_INOUT) return; string s=HistoryDealGetString(deal,DEAL_SYMBOL); int moduleId=ModuleFromMagic(magic); SAssetProfile p=PROFILE.Profile(s); double profit=HistoryDealGetDouble(deal,DEAL_PROFIT)+HistoryDealGetDouble(deal,DEAL_SWAP)+HistoryDealGetDouble(deal,DEAL_COMMISSION); LOG.Write("DEAL_CLOSED",s,ModuleName(moduleId),p.bucket,"",HistoryDealGetDouble(deal,DEAL_PRICE),0,0,0,0,(int)SymbolInfoInteger(s,SYMBOL_SPREAD),0,DoubleToString(profit,2));
 }
 
-//====================================================================
-// MAIN PIPELINE
-//====================================================================
 void ProcessSymbol(const int idx)
 {
-   string symbol = States[idx].symbol;
-   if(!TradeTimeAllowed(symbol))
-      return;
-
-   SAssetProfile profile = PROFILE.Profile(symbol);
-   string blockReason;
-   if(DefensiveRegimeBlocks(idx, profile, blockReason))
-   {
-      LOG.Write("SKIP", symbol, ModuleName(MOD_DEFENSIVE_REGIME), profile.bucket, "", 0, 0, 0, 0, ATR(idx, 1), (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD), 0, blockReason);
-      return;
-   }
-
-   int spread = (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
-   if(spread <= 0 || spread > profile.maxSpreadPoints)
-   {
-      LOG.Write("SKIP", symbol, "SpreadFilter", profile.bucket, "", 0, 0, 0, 0, ATR(idx, 1), spread, 0, "spread_rejected");
-      return;
-   }
-
-   for(int moduleId = 0; moduleId < MODULE_COUNT - 1; moduleId++)
-   {
-      SSignal sig;
-      sig.valid = false;
-      if(!SIGNALS.Build(idx, moduleId, sig))
-         continue;
-
-      EXECUTION.SendMarket(idx, sig);
-      if(OneSignalPerSymbolPerBar)
-         break;
-   }
+   string s=States[idx].symbol; if(!TradeTimeAllowed(s)) return; SAssetProfile p=PROFILE.Profile(s); string reason; if(DefensiveBlocks(idx,p,reason)){LOG.Write("SKIP",s,ModuleName(MOD_DEFENSIVE_REGIME),p.bucket,"",0,0,0,0,ATRv(idx,1),(int)SymbolInfoInteger(s,SYMBOL_SPREAD),0,reason); return;} int spread=(int)SymbolInfoInteger(s,SYMBOL_SPREAD); if(spread<=0||spread>p.maxSpreadPoints){LOG.Write("SKIP",s,"SpreadFilter",p.bucket,"",0,0,0,0,ATRv(idx,1),spread,0,"spread_rejected"); return;}
+   for(int moduleId=0;moduleId<MODULE_COUNT-1;moduleId++){SSignal sig; sig.valid=false; if(!SIGNALS.Build(idx,moduleId,sig)) continue; EXECUTION.SendMarket(idx,sig); if(OneSignalPerSymbolPerBar) break;}
 }
 //+------------------------------------------------------------------+
