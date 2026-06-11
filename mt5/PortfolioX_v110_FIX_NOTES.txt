@@ -1,0 +1,22 @@
+PortfolioX v1.000 tester log review
+
+Observed from tester log:
+- The EA is now trading. MARKET_FILLED and DEAL_CLOSED entries are present.
+- The first run is not viable yet. Parsed sample: 152 closed trades, net about -93.30, win rate about 40.8%, PF about 0.67.
+- Equity protection triggered early via equity hard-stop messages.
+- Main technical bug: repeated SL/TP modification attempts on every tick caused many Invalid stops / SLTP_ERROR logs.
+- Main strategy issue: too many modules fire simultaneously, then MaxPortfolioPositions blocks later signals and the portfolio behaves as crowded exposure rather than clean diversification.
+
+Required v1.100 code changes:
+1. Manage stops only once per completed EntryTF bar per symbol, not every tick.
+2. Before any SLTP modification, check SYMBOL_TRADE_STOPS_LEVEL and SYMBOL_TRADE_FREEZE_LEVEL.
+3. Add MinSLModifyStepPoints so trailing stop does not attempt tiny repeated changes.
+4. Lower default BaseRiskPercent from 0.18 to around 0.08.
+5. Lower MaxPortfolioPositions from 5 to 3.
+6. Lower MaxPositionsPerBucket from 2 to 1.
+7. Lower MaxPositionsPerSystem from 2 to 1.
+8. Lower MaxTradesPerSymbolPerDay from 3 to 1.
+9. Lower MaxTradesPerSystemPerDay from 4 to 2.
+10. Conservative default modules should be: TrendPullback, MomentumBreakout, Downside/Risk-Off, VolatilityExpansion. Keep CorrectionRebound, LateCycleFastMove, MTFTrendCore and AVWAPLiquidity available but disabled by default until their individual module tests pass.
+
+I attempted to update CoreEA_PortfolioX.mq5 directly with these changes, but the write was blocked by the connector safety layer. This file records the exact hardening plan so the next code update can be retried cleanly.
